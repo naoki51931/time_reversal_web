@@ -33,7 +33,13 @@ try:
         torch_dtype=torch.float16,
         variant="fp16"
     )
+    base_pipe.enable_attention_slicing()
+    base_pipe.enable_vae_slicing()
+    base_pipe.enable_model_cpu_offload()   # GPUが満杯なら自動的にCPU退避
+    base_pipe.enable_xformers_memory_efficient_attention()
+    torch.cuda.empty_cache()
     print("[Init] Base pipeline loaded.")
+
 except Exception as e:
     print("[ERROR] Failed to load base pipeline:", e)
     traceback.print_exc()
