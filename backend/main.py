@@ -74,7 +74,6 @@ async def generate(
     file2: UploadFile,
     frames: int = Form(8),
     t0: int = Form(5),
-    s_churn: float = Form(0.5),
     w_o_noise_re_injection: bool = Form(False)
 ):
     print("[Start] /generate called")
@@ -118,7 +117,6 @@ async def generate(
         print("[Run] Starting pipeline inference...")
         result = pipeline(
             img1, img2,
-            s_churn=s_churn,
             M=frames,
             t0=cutoff_t,
             decode_chunk_size=8,
