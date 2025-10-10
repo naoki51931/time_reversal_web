@@ -1,0 +1,27 @@
+# Virtual env
+venv/
+__pycache__/
+*.pyc
+
+# Node
+node_modules/
+
+# Model and data cache
+*.ckpt
+*.pt
+*.safetensors
+*.bin
+*.onnx
+*.mp4
+*.zip
+outputs/
+data/
+cache/
+logs/
+hf_cache/
+~/.cache/
+
+# IDE / OS
+.DS_Store
+.env
+

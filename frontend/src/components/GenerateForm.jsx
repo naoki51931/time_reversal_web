@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 
 const GenerateForm = () => {
+  const API_URL = "http://13.158.23.179:8000/generate";
   const [file1, setFile1] = useState(null);
   const [file2, setFile2] = useState(null);
   const [frames, setFrames] = useState(8);
@@ -27,12 +28,17 @@ const GenerateForm = () => {
     formData.append("t0", t0);
     formData.append("s_churn", sChurn);
     formData.append("w_o_noise_re_injection", noNoise);
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5 * 60 * 1000); // 5分
 
     try {
-      const response = await fetch("http://localhost:8000/generate", {
+      const response = await fetch(API_URL, {
         method: "POST",
         body: formData,
+	signal: controller.signal,
       });
+
+      clearTimeout(timeoutId);
 
       if (!response.ok) {
         throw new Error("生成に失敗しました");
