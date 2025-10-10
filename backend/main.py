@@ -33,11 +33,11 @@ try:
         torch_dtype=torch.float16,
         variant="fp16"
     )
-    base_pipe.enable_attention_slicing()
-    base_pipe.enable_vae_slicing()
-    base_pipe.enable_model_cpu_offload()   # GPUが満杯なら自動的にCPU退避
-    base_pipe.enable_xformers_memory_efficient_attention()
+    # メモリ最適化（StableVideoDiffusion対応）
     torch.cuda.empty_cache()
+    base_pipe.enable_attention_slicing()
+    base_pipe.enable_model_cpu_offload()
+    base_pipe.enable_xformers_memory_efficient_attention()
     print("[Init] Base pipeline loaded.")
 
 except Exception as e:
@@ -95,6 +95,16 @@ async def generate(
         img2 = Image.open(path2).convert("RGB")
         print("[Pipeline] Images loaded.")
 
+        # --- 🔹 自動リサイズ処理をここに追加 ---
+        max_size = 512  # GPU負荷を抑える目安解像度（512～768が妥当）
+        if img1.width > max_size or img1.height > max_size:
+            img1.thumbnail((max_size, max_size))
+            print(f"[Info] Resized img1 -> {img1.size}")
+        if img2.width > max_size or img2.height > max_size:
+            img2.thumbnail((max_size, max_size))
+            print(f"[Info] Resized img2 -> {img2.size}")
+        # ----------------------------------------
+
     except Exception as e:
         print("[ERROR] Failed to load input images:", e)
         traceback.print_exc()
@@ -114,6 +124,7 @@ async def generate(
             decode_chunk_size=8,
             generator=generator
         )
+        torch.cuda.empty_cache()
         frame_list = result.frames[0]
         print("[Run] Pipeline finished successfully.")
 

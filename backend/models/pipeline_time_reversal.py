@@ -45,7 +45,9 @@ class TimeReversalPipeline:
 
         # 2. VAE encode
         latents_1 = self.vae.encode(image_tensor_1).latent_dist.sample().unsqueeze(2).to(dtype)
+        torch.cuda.empty_cache()
         latents_2 = self.vae.encode(image_tensor_2).latent_dist.sample().unsqueeze(2).to(dtype)
+        torch.cuda.empty_cache()
         print("[Pipeline] Latents encoded.")
 
         # 3. Interpolate latents
@@ -66,18 +68,25 @@ class TimeReversalPipeline:
         encoder_hidden_states = encoder_hidden_states.unsqueeze(0)  # (1, M, D)
         print(f"[Pipeline] Hidden states ready: {encoder_hidden_states.shape}")
 
-        # 5. Noise prediction
-        t = torch.tensor([t0], dtype=torch.long, device=device)
+        # --- 4) スケジューラ初期化（t0 の 1 ステップだけ）
+        # latents は x_t (ノイズ付近) を仮定、UNet で noise_pred -> scheduler.step
+        timesteps = torch.tensor([t0], device=device, dtype=torch.long)
 
-        batch_size, channels, frames, height, width = latents.shape
-        added_time_ids = torch.zeros((batch_size, frames), dtype=torch.long, device=device)
+        # SVD 用 added_time_ids (必須)
+        added_time_ids = self._make_added_time_ids_for_svd(latents)  # (1, 1, 8)
 
+        # UNet 呼び出しに added_time_ids が必要か確認 (将来の互換性)
+        call_kwargs = {}
+        if "added_time_ids" in inspect.signature(self.unet.forward).parameters:
+            call_kwargs["added_time_ids"] = added_time_ids
+
+        # --- 5) UNet 1 ステップ
         noise_pred = self.unet(
             latents,
-            t.expand(latents.shape[0]),
+            timesteps.expand(latents.shape[0]),
             encoder_hidden_states=encoder_hidden_states,
-            added_time_ids=added_time_ids,
-        ).sample
+            **call_kwargs,
+        ).sample  # (1, 4, M, H, W)
         print("[Pipeline] Noise predicted.")
 
         # 6. Denoising step
