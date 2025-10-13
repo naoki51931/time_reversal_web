@@ -1,114 +1,154 @@
 import React, { useState } from "react";
+import axios from "axios";
+import {
+  Box,
+  Button,
+  TextField,
+  Typography,
+  CircularProgress,
+  Stack,
+} from "@mui/material";
 
-const GenerateForm = () => {
-  const API_URL = "http://13.158.23.179:8000/generate";
-  const [file1, setFile1] = useState(null);
-  const [file2, setFile2] = useState(null);
-  const [frames, setFrames] = useState(8);
-  const [t0, setT0] = useState(5);
-  const [sChurn, setSChurn] = useState(0.5);
-  const [noNoise, setNoNoise] = useState(false);
+const API_URL = process.env.REACT_APP_API_URL || "http://35.78.200.67:8000";
+
+export default function GenerateForm() {
+  const [image1, setImage1] = useState(null);
+  const [image2, setImage2] = useState(null);
+  const [frames, setFrames] = useState(2);
+  const [t0, setT0] = useState(5.0);
   const [loading, setLoading] = useState(false);
-  const [downloadUrl, setDownloadUrl] = useState(null);
+  const [resultUrls, setResultUrls] = useState([]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!file1 || !file2) {
-      alert("2枚の画像をアップロードしてください");
+    if (!image1 || !image2) {
+      alert("2枚の画像を選択してください。");
       return;
     }
 
     setLoading(true);
-    setDownloadUrl(null);
-
-    const formData = new FormData();
-    formData.append("file1", file1);
-    formData.append("file2", file2);
-    formData.append("frames", frames);
-    formData.append("t0", t0);
-    formData.append("s_churn", sChurn);
-    formData.append("w_o_noise_re_injection", noNoise);
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 5 * 60 * 1000); // 5分
+    setResultUrls([]);
 
     try {
-      const response = await fetch(API_URL, {
-        method: "POST",
-        body: formData,
-	signal: controller.signal,
+      const formData = new FormData();
+      formData.append("image_1", image1);
+      formData.append("image_2", image2);
+      formData.append("frames", frames);
+      formData.append("t0", t0);
+
+      console.log("[Client] Sending request to:", `${API_URL}/generate`);
+      const res = await axios.post(`${API_URL}/generate`, formData, {
+        headers: { "Content-Type": "multipart/form-data" },
       });
 
-      clearTimeout(timeoutId);
+      console.log("[Client] Response:", res.data);
 
-      if (!response.ok) {
-        throw new Error("生成に失敗しました");
+      if (res.data.image_urls) {
+        setResultUrls(res.data.image_urls);
+      } else if (res.data.image_url) {
+        setResultUrls([res.data.image_url]);
+      } else {
+        alert("画像URLが返されませんでした。");
       }
-
-      const blob = await response.blob();
-      const url = window.URL.createObjectURL(blob);
-      setDownloadUrl(url);
     } catch (err) {
-      alert(err.message);
+      console.error("Error during generation:", err);
+      alert("生成中にエラーが発生しました。");
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div style={{ maxWidth: "600px", margin: "0 auto" }}>
-      <h2>🎬 Time-Reversal 動画生成</h2>
+    <Box
+      sx={{
+        maxWidth: 600,
+        mx: "auto",
+        mt: 6,
+        p: 4,
+        border: "1px solid #ccc",
+        borderRadius: 2,
+        backgroundColor: "#fafafa",
+      }}
+    >
+      <Typography variant="h5" gutterBottom align="center">
+        Time Reversal Generator
+      </Typography>
+
       <form onSubmit={handleSubmit}>
-        <div>
-          <label>画像1:</label>
-          <input type="file" accept="image/*" onChange={(e) => setFile1(e.target.files[0])} />
-        </div>
-        <div>
-          <label>画像2:</label>
-          <input type="file" accept="image/*" onChange={(e) => setFile2(e.target.files[0])} />
-        </div>
-
-        <div>
-          <label>フレーム数 (M):</label>
-          <input type="number" value={frames} onChange={(e) => setFrames(e.target.value)} />
-        </div>
-        <div>
-          <label>t0 (cutoff timestep):</label>
-          <input type="number" value={t0} onChange={(e) => setT0(e.target.value)} />
-        </div>
-        <div>
-          <label>s_churn:</label>
-          <input
-            type="number"
-            step="0.1"
-            value={sChurn}
-            onChange={(e) => setSChurn(e.target.value)}
-          />
-        </div>
-        <div>
-          <label>
+        <Stack spacing={2}>
+          <Box>
+            <Typography variant="subtitle1">画像A（始まり）</Typography>
             <input
-              type="checkbox"
-              checked={noNoise}
-              onChange={(e) => setNoNoise(e.target.checked)}
+              type="file"
+              accept="image/*"
+              onChange={(e) => setImage1(e.target.files[0])}
             />
-            noise再注入なし
-          </label>
-        </div>
+          </Box>
 
-        <button type="submit" disabled={loading}>
-          {loading ? "生成中..." : "生成する"}
-        </button>
+          <Box>
+            <Typography variant="subtitle1">画像B（終わり）</Typography>
+            <input
+              type="file"
+              accept="image/*"
+              onChange={(e) => setImage2(e.target.files[0])}
+            />
+          </Box>
+
+          <TextField
+            label="生成フレーム数"
+            type="number"
+            value={frames}
+            onChange={(e) => setFrames(e.target.value)}
+            fullWidth
+          />
+
+          <TextField
+            label="t0 (時間パラメータ)"
+            type="number"
+            value={t0}
+            onChange={(e) => setT0(e.target.value)}
+            fullWidth
+          />
+
+          <Button
+            type="submit"
+            variant="contained"
+            color="primary"
+            disabled={loading}
+          >
+            {loading ? "生成中..." : "生成開始"}
+          </Button>
+        </Stack>
       </form>
 
-      {downloadUrl && (
-        <div style={{ marginTop: "20px" }}>
-          <a href={downloadUrl} download="result.zip">
-            ⬇️ ZIPファイルをダウンロード
-          </a>
-        </div>
+      {loading && (
+        <Box textAlign="center" mt={3}>
+          <CircularProgress />
+        </Box>
       )}
-    </div>
-  );
-};
 
-export default GenerateForm;
+      {!loading && resultUrls.length > 0 && (
+        <Box mt={4}>
+          <Typography variant="h6">生成結果</Typography>
+          <Stack spacing={2} mt={2}>
+            {resultUrls.map((url, idx) => (
+              <Box key={idx} textAlign="center">
+                <Typography variant="subtitle2">Frame {idx}</Typography>
+                <img
+                  src={url}
+                  alt={`Generated frame ${idx}`}
+                  style={{
+                    maxWidth: "100%",
+                    borderRadius: 8,
+                    border: "1px solid #ccc",
+                  }}
+                />
+              </Box>
+            ))}
+          </Stack>
+        </Box>
+      )}
+    </Box>
+  );
+}
+
