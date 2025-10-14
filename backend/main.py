@@ -159,7 +159,11 @@ async def generate(
 
         elif mode == "motion":
             print("[Motion] Generating dynamic motion interpolation frame...")
-            out_paths = generate_motion_frame(img1, img2, out_dir="outputs")
+            out_paths = generate_motion_frame(
+                img1, img2,
+                out_dir="outputs",
+                frames=frames  # ✅ ←追加
+            )
 
             # ✅ boolなどが返っても落ちない安全策
             if not isinstance(out_paths, list):

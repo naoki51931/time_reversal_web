@@ -9,24 +9,25 @@ def generate_motion_frame(
     img_a: Image.Image,
     img_b: Image.Image,
     out_dir="outputs",
-    strength=0.5,
-    guidance_scale=6.0,
+    frames=5,
+    strength=0.45,
+    guidance_scale=6.5,
 ):
     """
-    画像A→画像Bの動作を推定し、中間動作（顔や体の自然な変化）を生成する。
+    画像A→画像Bの動作を推定し、frames数に応じて中間動作フレームを生成する。
     Stable Diffusionを使い、動きの強さに応じて自動プロンプトを生成する。
     """
     os.makedirs(out_dir, exist_ok=True)
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     try:
-        # --- 1️⃣ パイプライン初期化 (fp32固定) ---
+        # --- 1️⃣ パイプライン初期化 ---
         pipe = StableDiffusionImg2ImgPipeline.from_pretrained(
             "runwayml/stable-diffusion-v1-5",
             torch_dtype=torch.float32,
         ).to(device)
 
-        # ✅ SafetyChecker完全無効化
+        # ✅ SafetyChecker無効化
         def dummy_checker(images, **kwargs):
             return images, [False] * len(images)
         pipe.safety_checker = dummy_checker
@@ -48,39 +49,44 @@ def generate_motion_frame(
 
         print(f"[Motion] Auto prompt: {auto_prompt}")
 
-        # --- 4️⃣ 中間画像ブレンド ---
-        blended = (arr_a * 0.5 + arr_b * 0.5).astype(np.uint8)
-        mid_img = Image.fromarray(blended)
+        # --- 4️⃣ 中間フレーム生成 ---
+        arr_a = np.array(img_a).astype(np.float32)
+        arr_b = np.array(img_b).astype(np.float32)
 
-        # --- 5️⃣ Stable Diffusion生成 ---
-        result = pipe(
-            prompt=auto_prompt,
-            image=mid_img,
-            strength=strength,
-            guidance_scale=guidance_scale,
-            num_inference_steps=40,
-        )
+        frame_paths = []
+        for i in range(1, frames + 1):
+            t = i / (frames + 1)
+            blended = (arr_a * (1 - t) + arr_b * t).astype(np.uint8)
+            mid_img = Image.fromarray(blended)
 
-        # ✅ 戻り値の型チェック
-        if not hasattr(result, "images") or not isinstance(result.images, list):
-            print(f"[Motion] Unexpected result type: {type(result)}")
-            return []
+            print(f"[Motion] Generating frame {i}/{frames} (blend={t:.2f})")
 
-        if not result.images:
-            print("[Motion] No images returned from pipeline.")
-            return []
+            # --- Diffusionで自然な補正 ---
+            result = pipe(
+                prompt=auto_prompt,
+                image=mid_img,
+                strength=strength,
+                guidance_scale=guidance_scale,
+                num_inference_steps=40,
+            )
 
-        out_path = os.path.join(out_dir, "motion_frame_00.png")
-        img_out = result.images[0]
+            if not hasattr(result, "images") or not result.images:
+                print(f"[WARN] Frame {i}: invalid result, skipping.")
+                continue
 
-        # 万一 bool が来ても PIL.Image に変換
-        if isinstance(img_out, bool):
-            print("[Motion] Got bool instead of Image, fallback to blended frame.")
-            img_out = mid_img
+            out_path = os.path.join(out_dir, f"motion_frame_{i:02d}.png")
+            img_out = result.images[0]
 
-        img_out.save(out_path)
-        print(f"[Motion] Saved: {out_path}")
-        return [out_path]
+            # Fallback: bool → PIL fallback
+            if isinstance(img_out, bool):
+                print(f"[WARN] Frame {i}: bool image fallback.")
+                img_out = mid_img
+
+            img_out.save(out_path)
+            frame_paths.append(out_path)
+
+        print(f"[Motion] Generated {len(frame_paths)} frames.")
+        return frame_paths
 
     except Exception as e:
         print(f"[Motion] Diffusion pipeline error: {e}")
