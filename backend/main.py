@@ -1,45 +1,88 @@
 import os
 from io import BytesIO
-from fastapi import FastAPI, File, Form, UploadFile, Request
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi import FastAPI, File, Form, UploadFile
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from PIL import Image
+from fastapi.middleware.cors import CORSMiddleware
+from PIL import Image, ImageEnhance
+import numpy as np
+import cv2
 
-from models.pipeline_time_reversal import TimeReversalPipeline as NormalPipeline
+from models.pipeline_time_reversal import TimeReversalPipeline as BasePipeline
 from models.pipeline_time_reversal_lineart import TimeReversalPipeline as LineartPipeline
 from models.pipeline_time_reversal_denoise import TimeReversalPipeline as DenoisePipeline
 
-app = FastAPI(title="Time Reversal WebAPI")
-from fastapi.middleware.cors import CORSMiddleware
+app = FastAPI(title="Time Reversal Hybrid API")
 
-# CORS設定
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 本番では ["http://43.207.92.186:3000"] に限定
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# 出力フォルダ
-OUTPUT_DIR = "outputs"
-os.makedirs(OUTPUT_DIR, exist_ok=True)
-app.mount("/outputs", StaticFiles(directory=OUTPUT_DIR), name="outputs")
+os.makedirs("outputs", exist_ok=True)
+app.mount("/outputs", StaticFiles(directory="outputs"), name="outputs")
 
-# 各パイプライン初期化
-print("[Startup] Initializing pipelines...")
-normal_pipeline = NormalPipeline(device="cuda" if os.environ.get("DEVICE") != "cpu" else "cpu")
-lineart_pipeline = LineartPipeline(device="cuda" if os.environ.get("DEVICE") != "cpu" else "cpu")
-denoise_pipeline = DenoisePipeline(device="cuda" if os.environ.get("DEVICE") != "cpu" else "cpu")
-print("[Startup] All pipelines ready.")
+pipe_normal = BasePipeline()
+pipe_lineart = LineartPipeline()
+pipe_denoise = DenoisePipeline()
+pipe_lineart_denoise = DenoisePipeline(denoise_sigma=0.4)
+
+
+def enhance_contrast_and_sharpness(image: Image.Image) -> Image.Image:
+    """Pillowで強コントラスト＆シャープ化"""
+    enhancer_c = ImageEnhance.Contrast(image)
+    image = enhancer_c.enhance(2.4)
+    enhancer_s = ImageEnhance.Sharpness(image)
+    image = enhancer_s.enhance(3.0)
+    return image
+
+
+def enhance_contrast_cv(image: np.ndarray) -> np.ndarray:
+    """OpenCVで局所コントラスト補正 + シャープ化"""
+    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+    clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
+    cl = clahe.apply(l)
+    limg = cv2.merge((cl, a, b))
+    img = cv2.cvtColor(limg, cv2.COLOR_LAB2BGR)
+    blur = cv2.GaussianBlur(img, (0, 0), 2.0)
+    sharpened = cv2.addWeighted(img, 2.0, blur, -1.0, 0)
+    return sharpened
+
+
+def emphasize_lines(img: np.ndarray) -> np.ndarray:
+    """線を強調して太らせる"""
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+    # エッジ抽出をより強めに（低閾値）
+    edges = cv2.Canny(gray, 20, 80)
+
+    # 線を太らせる（dilate）
+    kernel = np.ones((2, 2), np.uint8)
+    thick = cv2.dilate(edges, kernel, iterations=2)
+
+    # 線の黒を強めにするため反転
+    inv = cv2.bitwise_not(thick)
+    edge_colored = cv2.cvtColor(inv, cv2.COLOR_GRAY2BGR)
+
+    # γ補正（コントラストさらに上げる）
+    gamma = 0.7
+    look_up = np.array([((i / 255.0) ** gamma) * 255 for i in np.arange(256)]).astype("uint8")
+    edge_colored = cv2.LUT(edge_colored, look_up)
+
+    # 合成（線をより黒く）
+    blend = cv2.addWeighted(img, 0.7, edge_colored, 1.2, -10)
+    return blend
 
 
 @app.post("/generate")
 async def generate(
-    request: Request,
     image_1: UploadFile = File(...),
     image_2: UploadFile = File(...),
-    frames: int = Form(3),
+    frames: int = Form(8),
     t0: float = Form(5.0),
     lineart: bool = Form(False),
     denoise: bool = Form(False),
@@ -47,55 +90,74 @@ async def generate(
     print("[Start] /generate called")
     print(f"[Info] Parameters -> frames={frames}, t0={t0}, lineart={lineart}, denoise={denoise}")
 
+    img1 = Image.open(BytesIO(await image_1.read())).convert("RGB")
+    img2 = Image.open(BytesIO(await image_2.read())).convert("RGB")
+    print("[Info] Input images loaded")
+
+    mode = "normal"
+    if lineart and denoise:
+        mode = "lineart_denoise"
+    elif lineart:
+        mode = "lineart"
+    elif denoise:
+        mode = "denoise"
+
+    print(f"[Run] Starting pipeline inference... (mode={mode})")
+
     try:
-        img1 = Image.open(BytesIO(await image_1.read()))
-        img2 = Image.open(BytesIO(await image_2.read()))
-        print("[Info] Input images loaded")
+        if mode == "normal":
+            result = pipe_normal(img1, img2, M=frames, t0=t0)
 
-        # モード選択
-        if lineart:
-            pipeline = lineart_pipeline
-            mode = "lineart"
-        elif denoise:
-            pipeline = denoise_pipeline
-            mode = "denoise"
+        elif mode == "lineart":
+            result = pipe_lineart(img1, img2, M=frames, t0=t0)
+
+        elif mode == "denoise":
+            result = pipe_denoise(img1, img2, M=frames, t0=t0)
+
         else:
-            pipeline = normal_pipeline
-            mode = "normal"
+            # ハイブリッド処理
+            print("[Hybrid] Applying contrast + sharpness + line emphasis...")
 
-        print(f"[Run] Starting pipeline inference... (mode={mode})")
+            img1 = enhance_contrast_and_sharpness(img1)
+            img2 = enhance_contrast_and_sharpness(img2)
+            res_denoise = pipe_denoise(img1, img2, M=frames, t0=t0)
+            frame_paths = res_denoise.frames
 
-        result = pipeline(img1, img2, M=frames, t0=t0)
-        if not hasattr(result, "frames"):
-            raise ValueError("Pipelineの戻り値が不明な形式です")
+            new_paths = []
+            for fp in frame_paths:
+                img = cv2.imread(fp)
+                img = enhance_contrast_cv(img)
+                img_denoised = cv2.fastNlMeansDenoisingColored(img, None, 10, 10, 7, 21)
+                strong = emphasize_lines(img_denoised)
 
-        base_url = str(request.base_url).rstrip("/")
-        urls = [f"{base_url}/outputs/{os.path.basename(p)}" for p in result.frames]
+                out_path = fp.replace(".png", "_strongline.png")
+                cv2.imwrite(out_path, strong)
+                new_paths.append(out_path)
+
+            result = {
+                "status": "ok",
+                "frames_generated": len(new_paths),
+                "image_urls": [f"/outputs/{os.path.basename(p)}" for p in new_paths],
+                "debug": {
+                    "mode": "lineart_denoise_strong",
+                    "contrast": "boosted",
+                    "sharpness": "maximized",
+                    "edge_strength": "high",
+                },
+            }
+
+            return JSONResponse(result)
 
         return JSONResponse(
             {
-                "status": "ok",
-                "mode": mode,
+                "status": result.status,
                 "frames_generated": result.frames_generated,
-                "image_urls": urls,
+                "image_urls": [f"/outputs/{os.path.basename(p)}" for p in result.frames],
                 "debug": result.debug,
             }
         )
 
     except Exception as e:
         print(f"[ERROR] Pipeline execution failed: {e}")
-        return JSONResponse(status_code=500, content={"error": str(e)})
-
-
-@app.get("/outputs/{filename}")
-async def get_output_image(filename: str):
-    file_path = os.path.join(OUTPUT_DIR, filename)
-    if os.path.exists(file_path):
-        return FileResponse(file_path)
-    return JSONResponse(status_code=404, content={"error": "File not found"})
-
-
-@app.get("/")
-async def root():
-    return {"status": "running", "message": "Time Reversal WebAPI is active."}
+        return JSONResponse({"status": "error", "error": str(e)}, status_code=500)
 
