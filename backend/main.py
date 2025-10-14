@@ -6,7 +6,6 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image, ImageEnhance
-import numpy as np
 import cv2
 
 # --- 各パイプライン読み込み ---
@@ -14,7 +13,7 @@ from models.pipeline_time_reversal import TimeReversalPipeline as BasePipeline
 from models.pipeline_time_reversal_lineart import TimeReversalPipeline as LineartPipeline
 from models.pipeline_time_reversal_denoise import TimeReversalPipeline as DenoisePipeline
 from models.pipeline_time_reversal_sampling import generate_midframes_trs
-from models.pipeline_motion_auto import generate_motion_frame  # ✅ 動作補間モードのみ使用
+from models.pipeline_motion_auto import generate_motion_frame  # ✅ 動作補間のみ使用
 
 # ==============================================================
 # FastAPI アプリ設定
@@ -34,7 +33,7 @@ os.makedirs("outputs", exist_ok=True)
 app.mount("/outputs", StaticFiles(directory="outputs"), name="outputs")
 
 # ==============================================================
-# パイプラインの初期化
+# パイプライン初期化
 # ==============================================================
 
 pipe_normal = BasePipeline()
@@ -49,7 +48,7 @@ def str2bool(v):
 
 
 # ==============================================================
-# 生成エンドポイント
+# メインAPI
 # ==============================================================
 
 @app.post("/generate")
@@ -61,9 +60,8 @@ async def generate(
     lineart: str = Form("false"),
     denoise: str = Form("false"),
     diffusion_trs: str = Form("false"),
-    motion: str = Form("false"),  # ✅ 瞬き削除・動作補間のみ
+    motion: str = Form("false"),  # ✅ 瞬き削除済み
 ):
-    """メイン生成エンドポイント"""
     lineart = str2bool(lineart)
     denoise = str2bool(denoise)
     diffusion_trs = str2bool(diffusion_trs)
@@ -72,11 +70,13 @@ async def generate(
     print(f"\n[Start] /generate called")
     print(f"[Info] Params: frames={frames}, t0={t0}, lineart={lineart}, denoise={denoise}, diffusion_trs={diffusion_trs}, motion={motion}")
 
-    # 入力画像読み込み
+    # 画像ロード
     img1 = Image.open(BytesIO(await image_1.read())).convert("RGB")
     img2 = Image.open(BytesIO(await image_2.read())).convert("RGB")
 
-    # モード判定
+    session_id = uuid.uuid4().hex[:8]
+
+    # モード決定
     mode = "normal"
     if motion:
         mode = "motion"
@@ -89,12 +89,11 @@ async def generate(
     elif diffusion_trs:
         mode = "diffusion_trs"
 
-    session_id = uuid.uuid4().hex[:8]
     print(f"[Mode] Selected -> {mode}")
 
     try:
         # ======================================================
-        # 各モード処理
+        # 各モード
         # ======================================================
 
         if mode == "normal":
@@ -141,6 +140,10 @@ async def generate(
                 out_dir="outputs",
             )
 
+            if not isinstance(out_paths, list):
+                print("[WARN] TRS returned non-list result.")
+                out_paths = []
+
             renamed_paths = []
             for i, p in enumerate(out_paths):
                 new_p = os.path.join("outputs", f"{session_id}_trs_{i:02d}.png")
@@ -156,10 +159,12 @@ async def generate(
 
         elif mode == "motion":
             print("[Motion] Generating dynamic motion interpolation frame...")
-            out_paths = generate_motion_frame(
-                img1, img2,
-                out_dir="outputs"
-            )
+            out_paths = generate_motion_frame(img1, img2, out_dir="outputs")
+
+            # ✅ boolなどが返っても落ちない安全策
+            if not isinstance(out_paths, list):
+                print("[ERROR] Motion pipeline did not return list; coercing to empty list.")
+                out_paths = []
 
             renamed_paths = []
             for i, p in enumerate(out_paths):
@@ -175,7 +180,7 @@ async def generate(
             })
 
         # ======================================================
-        # 通常系の結果返却
+        # 通常出力
         # ======================================================
         return JSONResponse({
             "status": result.status,
