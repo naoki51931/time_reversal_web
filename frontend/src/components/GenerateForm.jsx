@@ -29,7 +29,7 @@ export default function GenerateForm() {
   const [openDialog, setOpenDialog] = useState(false);
   const [currentIndex, setCurrentIndex] = useState(0);
 
-  const API_BASE = "http://43.207.92.186:8000";
+  const API_BASE = "http://13.159.71.138:8000";
 
   // ←→キーイベントで画像を切り替え
   useEffect(() => {
