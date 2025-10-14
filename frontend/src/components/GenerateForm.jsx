@@ -10,6 +10,7 @@ import {
   FormControlLabel,
   Dialog,
   DialogContent,
+  DialogTitle,
   IconButton,
 } from "@mui/material";
 import CloseIcon from "@mui/icons-material/Close";
@@ -24,6 +25,7 @@ export default function GenerateForm() {
   const [lineart, setLineart] = useState(false);
   const [denoise, setDenoise] = useState(false);
   const [hybrid, setHybrid] = useState(false);
+  const [diffusionTrs, setDiffusionTrs] = useState(false); // ★ 新モードフラグ
   const [imageUrls, setImageUrls] = useState([]);
   const [loading, setLoading] = useState(false);
   const [openDialog, setOpenDialog] = useState(false);
@@ -31,7 +33,7 @@ export default function GenerateForm() {
 
   const API_BASE = "http://13.159.71.138:8000";
 
-  // ←→キーイベントで画像を切り替え
+  // ←→キーで画像切替
   useEffect(() => {
     const handleKeyDown = (e) => {
       if (!openDialog || imageUrls.length === 0) return;
@@ -56,13 +58,18 @@ export default function GenerateForm() {
     formData.append("t0", t0);
     formData.append("lineart", hybrid ? true : lineart);
     formData.append("denoise", hybrid ? true : denoise);
+    formData.append("diffusion_trs", diffusionTrs); // ★ 新パラメータ追加
 
     try {
       setLoading(true);
       const res = await axios.post(`${API_BASE}/generate`, formData, {
         headers: { "Content-Type": "multipart/form-data" },
       });
-      if (res.data.image_urls) setImageUrls(res.data.image_urls);
+      if (res.data.image_urls) {
+        setImageUrls(res.data.image_urls);
+      } else {
+        alert("生成結果がありません。");
+      }
     } catch (err) {
       console.error(err);
       alert("生成中にエラーが発生しました。");
@@ -132,6 +139,17 @@ export default function GenerateForm() {
           label="線画＋ノイズ除去ハイブリッド"
         />
 
+        {/* ★ 新しいモード */}
+        <FormControlLabel
+          control={
+            <Checkbox
+              checked={diffusionTrs}
+              onChange={(e) => setDiffusionTrs(e.target.checked)}
+            />
+          }
+          label="Stable Diffusion 時反転補間モード"
+        />
+
         <Button variant="contained" type="submit" disabled={loading} sx={{ mt: 2 }}>
           生成開始
         </Button>
@@ -167,15 +185,25 @@ export default function GenerateForm() {
         </Box>
       </Box>
 
-      {/* === 画像プレビューダイアログ === */}
-      <Dialog open={openDialog} onClose={() => setOpenDialog(false)} maxWidth="lg">
-        <Box sx={{ position: "absolute", top: 8, right: 8 }}>
-          <IconButton onClick={() => setOpenDialog(false)}>
+      {/* === プレビュー === */}
+      <Dialog open={openDialog} onClose={() => setOpenDialog(false)} maxWidth="lg" fullWidth>
+        <DialogTitle sx={{ position: "relative", pr: 5 }}>
+          プレビュー
+          <IconButton
+            onClick={() => setOpenDialog(false)}
+            sx={{ position: "absolute", right: 8, top: 8 }}
+          >
             <CloseIcon />
           </IconButton>
-        </Box>
-        <DialogContent sx={{ position: "relative", textAlign: "center" }}>
-          {/* 左右ナビゲーション */}
+        </DialogTitle>
+
+        <DialogContent
+          sx={{
+            position: "relative",
+            textAlign: "center",
+            backgroundColor: "#000",
+          }}
+        >
           {imageUrls.length > 1 && (
             <>
               <IconButton
@@ -186,6 +214,7 @@ export default function GenerateForm() {
                   top: "50%",
                   transform: "translateY(-50%)",
                   backgroundColor: "rgba(255,255,255,0.6)",
+                  zIndex: 10,
                 }}
               >
                 <ArrowBackIosNewIcon />
@@ -199,6 +228,7 @@ export default function GenerateForm() {
                   top: "50%",
                   transform: "translateY(-50%)",
                   backgroundColor: "rgba(255,255,255,0.6)",
+                  zIndex: 10,
                 }}
               >
                 <ArrowForwardIosIcon />
@@ -219,8 +249,8 @@ export default function GenerateForm() {
               }}
             />
           )}
-          <Typography sx={{ mt: 1 }}>
-            {currentIndex + 1} / {imageUrls.length}（←→キーでも移動可能）
+          <Typography sx={{ mt: 1, color: "#fff" }}>
+            {currentIndex + 1} / {imageUrls.length}（←→キーで移動）
           </Typography>
         </DialogContent>
       </Dialog>
