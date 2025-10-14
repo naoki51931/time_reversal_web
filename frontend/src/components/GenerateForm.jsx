@@ -9,7 +9,7 @@ import {
   Stack,
 } from "@mui/material";
 
-const API_URL = process.env.REACT_APP_API_URL || "http://35.78.200.67:8000";
+const API_URL = process.env.REACT_APP_API_URL || "http://43.207.92.186:8000";
 
 export default function GenerateForm() {
   const [image1, setImage1] = useState(null);
