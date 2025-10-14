@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import axios from "axios";
 import {
   Button,
@@ -13,6 +13,8 @@ import {
   IconButton,
 } from "@mui/material";
 import CloseIcon from "@mui/icons-material/Close";
+import ArrowBackIosNewIcon from "@mui/icons-material/ArrowBackIosNew";
+import ArrowForwardIosIcon from "@mui/icons-material/ArrowForwardIos";
 
 export default function GenerateForm() {
   const [image1, setImage1] = useState(null);
@@ -25,9 +27,20 @@ export default function GenerateForm() {
   const [imageUrls, setImageUrls] = useState([]);
   const [loading, setLoading] = useState(false);
   const [openDialog, setOpenDialog] = useState(false);
-  const [selectedImage, setSelectedImage] = useState(null);
+  const [currentIndex, setCurrentIndex] = useState(0);
 
   const API_BASE = "http://43.207.92.186:8000";
+
+  // ←→キーイベントで画像を切り替え
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (!openDialog || imageUrls.length === 0) return;
+      if (e.key === "ArrowLeft") handlePrev();
+      if (e.key === "ArrowRight") handleNext();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  });
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -49,7 +62,6 @@ export default function GenerateForm() {
       const res = await axios.post(`${API_BASE}/generate`, formData, {
         headers: { "Content-Type": "multipart/form-data" },
       });
-
       if (res.data.image_urls) setImageUrls(res.data.image_urls);
     } catch (err) {
       console.error(err);
@@ -59,9 +71,19 @@ export default function GenerateForm() {
     }
   };
 
-  const handleImageClick = (url) => {
-    setSelectedImage(url);
+  const handleImageClick = (index) => {
+    setCurrentIndex(index);
     setOpenDialog(true);
+  };
+
+  const handleNext = () => {
+    if (imageUrls.length === 0) return;
+    setCurrentIndex((prev) => (prev + 1) % imageUrls.length);
+  };
+
+  const handlePrev = () => {
+    if (imageUrls.length === 0) return;
+    setCurrentIndex((prev) => (prev - 1 + imageUrls.length) % imageUrls.length);
   };
 
   return (
@@ -119,13 +141,21 @@ export default function GenerateForm() {
 
       <Box sx={{ mt: 4 }}>
         {imageUrls.length > 0 && <Typography variant="h6">生成結果:</Typography>}
-        <Box sx={{ display: "flex", flexWrap: "wrap", gap: 2, mt: 2, justifyContent: "center" }}>
+        <Box
+          sx={{
+            display: "flex",
+            flexWrap: "wrap",
+            gap: 2,
+            mt: 2,
+            justifyContent: "center",
+          }}
+        >
           {imageUrls.map((url, idx) => (
             <img
               key={idx}
               src={`${API_BASE}${url}`}
               alt={`frame_${idx}`}
-              onClick={() => handleImageClick(`${API_BASE}${url}`)}
+              onClick={() => handleImageClick(idx)}
               style={{
                 width: "200px",
                 borderRadius: "8px",
@@ -137,17 +167,49 @@ export default function GenerateForm() {
         </Box>
       </Box>
 
+      {/* === 画像プレビューダイアログ === */}
       <Dialog open={openDialog} onClose={() => setOpenDialog(false)} maxWidth="lg">
         <Box sx={{ position: "absolute", top: 8, right: 8 }}>
           <IconButton onClick={() => setOpenDialog(false)}>
             <CloseIcon />
           </IconButton>
         </Box>
-        <DialogContent>
-          {selectedImage && (
+        <DialogContent sx={{ position: "relative", textAlign: "center" }}>
+          {/* 左右ナビゲーション */}
+          {imageUrls.length > 1 && (
+            <>
+              <IconButton
+                onClick={handlePrev}
+                sx={{
+                  position: "absolute",
+                  left: 8,
+                  top: "50%",
+                  transform: "translateY(-50%)",
+                  backgroundColor: "rgba(255,255,255,0.6)",
+                }}
+              >
+                <ArrowBackIosNewIcon />
+              </IconButton>
+
+              <IconButton
+                onClick={handleNext}
+                sx={{
+                  position: "absolute",
+                  right: 8,
+                  top: "50%",
+                  transform: "translateY(-50%)",
+                  backgroundColor: "rgba(255,255,255,0.6)",
+                }}
+              >
+                <ArrowForwardIosIcon />
+              </IconButton>
+            </>
+          )}
+
+          {imageUrls[currentIndex] && (
             <img
-              src={selectedImage}
-              alt="拡大表示"
+              src={`${API_BASE}${imageUrls[currentIndex]}`}
+              alt={`frame_${currentIndex}`}
               style={{
                 maxWidth: "100%",
                 maxHeight: "80vh",
@@ -157,6 +219,9 @@ export default function GenerateForm() {
               }}
             />
           )}
+          <Typography sx={{ mt: 1 }}>
+            {currentIndex + 1} / {imageUrls.length}（←→キーでも移動可能）
+          </Typography>
         </DialogContent>
       </Dialog>
     </Box>
