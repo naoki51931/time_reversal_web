@@ -21,3 +21,11 @@ numpy>=1.26.0
 
 # Optional (ZIP, etc.)
 python-multipart>=0.0.9
+
+fastapi
+uvicorn
+pillow
+torch
+diffusers
+transformers
+opencv-python-headless

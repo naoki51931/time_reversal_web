@@ -3,6 +3,8 @@ import os
 from dataclasses import dataclass
 from typing import List, Tuple
 import torch
+import cv2
+import numpy as np
 from PIL import Image
 from diffusers.models import AutoencoderKL
 
@@ -39,6 +41,36 @@ def _tensor_to_pil(t: torch.Tensor) -> Image.Image:
     return Image.fromarray(t)
 
 
+def _extract_lineart(pil: Image.Image, blur_ksize=3, threshold_block=9, threshold_C=2) -> Image.Image:
+    """
+    画像から線画を抽出する OpenCV 処理。
+    - グレースケール化 → ノイズ除去 → 自適応二値化
+    - 白背景＋黒線化
+    """
+    img = np.array(pil.convert("RGB"))
+    gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+
+    # ノイズ軽減
+    gray = cv2.GaussianBlur(gray, (blur_ksize, blur_ksize), 0)
+
+    # 適応的二値化で線抽出
+    edges = cv2.adaptiveThreshold(
+        gray,
+        255,
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY_INV,
+        threshold_block,
+        threshold_C,
+    )
+
+    # 黒線→黒、背景→白
+    line = 255 - edges
+
+    # 3ch化して戻す
+    out = cv2.cvtColor(line, cv2.COLOR_GRAY2RGB)
+    return Image.fromarray(out)
+
+
 @dataclass
 class PipelineResult:
     status: str
@@ -49,7 +81,7 @@ class PipelineResult:
 
 class TimeReversalPipeline:
     """
-    Stable Diffusion 1.5 の VAE を使用し、2枚の画像の潜在を補間して中間画像を生成。
+    Diffusers の VAE を使った潜在補間＋線画抽出。
     """
 
     def __init__(
@@ -78,7 +110,7 @@ class TimeReversalPipeline:
 
     @torch.inference_mode()
     def __call__(self, image_1: Image.Image, image_2: Image.Image, M: int = 3, t0: float = 5.0) -> PipelineResult:
-        print("[Pipeline] Start processing (vae_interpolate)")
+        print("[Pipeline] Start processing (vae_interpolate + lineart)")
         M = max(2, int(M))
 
         # サイズ統一
@@ -105,10 +137,13 @@ class TimeReversalPipeline:
         frames: List[str] = []
         for i, a in enumerate(alphas):
             z = (1 - a) * z1 + a * z2
-            # 🔧 dtype修正: vae.decode() の入力dtypeをvaeと合わせる
             z = z.to(dtype=self.dtype)
             x = self.vae.decode(z / self.scaling_factor).sample
             out_pil = _tensor_to_pil(x)
+
+            # 🔧 線画抽出処理を追加
+            out_pil = _extract_lineart(out_pil, blur_ksize=3, threshold_block=9, threshold_C=2)
+
             out_path = os.path.join(self.output_dir, f"frame_{i:03d}.png")
             out_pil.save(out_path)
             frames.append(out_path)
@@ -119,7 +154,7 @@ class TimeReversalPipeline:
             "dtype": str(self.dtype).replace("torch.", ""),
             "size": [h, w],
             "latent_shape": [int(x) for x in z1.shape],
-            "mode": "vae_interpolate_safe",
+            "mode": "vae_interpolate_lineart",
             "t0": float(t0),
         }
 
