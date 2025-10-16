@@ -7,13 +7,14 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image, ImageEnhance
 import cv2
+import torch
 
 # === モデル読み込み ===
 from models.pipeline_time_reversal import TimeReversalPipeline as BasePipeline
 from models.pipeline_time_reversal_lineart import TimeReversalPipeline as LineartPipeline
 from models.pipeline_time_reversal_denoise import TimeReversalPipeline as DenoisePipeline
 from models.pipeline_time_reversal_sampling import generate_midframes_trs
-from models.pipeline_motion_auto import generate_motion_frame  # ✅ 創造的動作補間対応版
+from models.pipeline_motion_auto import generate_motion_frame
 
 # ==============================================================
 # FastAPI設定
@@ -61,16 +62,17 @@ async def generate(
     denoise: str = Form("false"),
     diffusion_trs: str = Form("false"),
     motion: str = Form("false"),
+    prompt: str = Form(""),
 ):
     """2枚の画像を補間して中間フレームを生成するAPI"""
 
-    # --- bool化 ---
+    # --- bool変換 ---
     lineart = str2bool(lineart)
     denoise = str2bool(denoise)
     diffusion_trs = str2bool(diffusion_trs)
     motion = str2bool(motion)
 
-    # --- フレーム数チェック ---
+    # --- フレーム数補正 ---
     if frames <= 0:
         print(f"[WARN] Invalid frame count ({frames}) → defaulting to 1")
         frames = 1
@@ -81,6 +83,13 @@ async def generate(
     # --- 入力画像読み込み ---
     img1 = Image.open(BytesIO(await image_1.read())).convert("RGB")
     img2 = Image.open(BytesIO(await image_2.read())).convert("RGB")
+
+    # ✅ 自動で最小サイズに合わせる
+    w = min(img1.width, img2.width)
+    h = min(img1.height, img2.height)
+    img1 = img1.resize((w, h), Image.LANCZOS)
+    img2 = img2.resize((w, h), Image.LANCZOS)
+    print(f"[Resize] Unified size to ({w}, {h})")
 
     # --- モード選択 ---
     mode = "normal"
@@ -99,8 +108,10 @@ async def generate(
     print(f"[Mode] Selected -> {mode}")
 
     try:
+        torch.cuda.empty_cache()  # ✅ GPUメモリ断片化を防止
+
         # ======================================================
-        # 各モードの処理
+        # 各モード処理
         # ======================================================
 
         if mode == "normal":
@@ -167,9 +178,13 @@ async def generate(
         elif mode == "motion":
             print("[Motion] Generating dynamic motion interpolation frame...")
             out_paths = generate_motion_frame(
-                img1, img2,
+                img_a=img1,
+                img_b=img2,
                 out_dir="outputs",
-                frames=frames  # ✅ 修正：framesを渡す
+                frames=frames,
+                strength=0.55,
+                guidance_scale=7.5,
+                prompt=prompt if prompt else None,
             )
 
             if not isinstance(out_paths, list):
@@ -190,7 +205,7 @@ async def generate(
             })
 
         # ======================================================
-        # 通常モードの出力
+        # 通常モード出力
         # ======================================================
         return JSONResponse({
             "status": result.status,
