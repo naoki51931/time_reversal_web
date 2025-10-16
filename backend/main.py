@@ -8,15 +8,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image, ImageEnhance
 import cv2
 
-# --- 各パイプライン読み込み ---
+# === モデル読み込み ===
 from models.pipeline_time_reversal import TimeReversalPipeline as BasePipeline
 from models.pipeline_time_reversal_lineart import TimeReversalPipeline as LineartPipeline
 from models.pipeline_time_reversal_denoise import TimeReversalPipeline as DenoisePipeline
 from models.pipeline_time_reversal_sampling import generate_midframes_trs
-from models.pipeline_motion_auto import generate_motion_frame  # ✅ 動作補間のみ使用
+from models.pipeline_motion_auto import generate_motion_frame  # ✅ 創造的動作補間対応版
 
 # ==============================================================
-# FastAPI アプリ設定
+# FastAPI設定
 # ==============================================================
 
 app = FastAPI(title="Time Reversal Hybrid API")
@@ -43,12 +43,12 @@ pipe_lineart_denoise = DenoisePipeline(denoise_sigma=0.4)
 
 
 def str2bool(v):
-    """文字列→bool変換"""
+    """フォーム入力の文字列をboolに変換"""
     return str(v).lower() in ("1", "true", "yes", "on")
 
 
 # ==============================================================
-# メインAPI
+# 生成API
 # ==============================================================
 
 @app.post("/generate")
@@ -60,23 +60,29 @@ async def generate(
     lineart: str = Form("false"),
     denoise: str = Form("false"),
     diffusion_trs: str = Form("false"),
-    motion: str = Form("false"),  # ✅ 瞬き削除済み
+    motion: str = Form("false"),
 ):
+    """2枚の画像を補間して中間フレームを生成するAPI"""
+
+    # --- bool化 ---
     lineart = str2bool(lineart)
     denoise = str2bool(denoise)
     diffusion_trs = str2bool(diffusion_trs)
     motion = str2bool(motion)
 
+    # --- フレーム数チェック ---
+    if frames <= 0:
+        print(f"[WARN] Invalid frame count ({frames}) → defaulting to 1")
+        frames = 1
+
     print(f"\n[Start] /generate called")
     print(f"[Info] Params: frames={frames}, t0={t0}, lineart={lineart}, denoise={denoise}, diffusion_trs={diffusion_trs}, motion={motion}")
 
-    # 画像ロード
+    # --- 入力画像読み込み ---
     img1 = Image.open(BytesIO(await image_1.read())).convert("RGB")
     img2 = Image.open(BytesIO(await image_2.read())).convert("RGB")
 
-    session_id = uuid.uuid4().hex[:8]
-
-    # モード決定
+    # --- モード選択 ---
     mode = "normal"
     if motion:
         mode = "motion"
@@ -89,11 +95,12 @@ async def generate(
     elif diffusion_trs:
         mode = "diffusion_trs"
 
+    session_id = uuid.uuid4().hex[:8]
     print(f"[Mode] Selected -> {mode}")
 
     try:
         # ======================================================
-        # 各モード
+        # 各モードの処理
         # ======================================================
 
         if mode == "normal":
@@ -162,10 +169,9 @@ async def generate(
             out_paths = generate_motion_frame(
                 img1, img2,
                 out_dir="outputs",
-                frames=frames  # ✅ ←追加
+                frames=frames  # ✅ 修正：framesを渡す
             )
 
-            # ✅ boolなどが返っても落ちない安全策
             if not isinstance(out_paths, list):
                 print("[ERROR] Motion pipeline did not return list; coercing to empty list.")
                 out_paths = []
@@ -184,7 +190,7 @@ async def generate(
             })
 
         # ======================================================
-        # 通常出力
+        # 通常モードの出力
         # ======================================================
         return JSONResponse({
             "status": result.status,
