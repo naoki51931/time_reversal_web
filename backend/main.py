@@ -4,6 +4,7 @@ from io import BytesIO
 from fastapi import FastAPI, File, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from PIL import Image
 from dotenv import load_dotenv
 
@@ -21,7 +22,7 @@ BASE_URL = os.getenv("BASE_URL", "http://13.159.71.138:8000")
 # =========================================
 # 🚀 FastAPI アプリ設定
 # =========================================
-app = FastAPI(title="Time Reversal Web", version="2.1")
+app = FastAPI(title="Time Reversal Web", version="2.2")
 
 app.add_middleware(
     CORSMiddleware,
@@ -34,8 +35,8 @@ app.add_middleware(
 # =========================================
 # 📁 出力ディレクトリ作成
 # =========================================
-os.makedirs("outputs", exist_ok=True)
-
+OUTPUT_DIR = "outputs"
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # =========================================
 # 🌀 補間エンドポイント
@@ -68,6 +69,12 @@ async def generate(
         print(f"[Warn] frames={frames} → 自動補正: 1 に変更")
         frames = 1
 
+    # === 一意のIDを生成 ===
+    run_id = uuid.uuid4().hex[:8]
+    subdir = os.path.join(OUTPUT_DIR, f"run_{run_id}")
+    os.makedirs(subdir, exist_ok=True)
+    print(f"[Run] Session ID = {run_id}")
+
     try:
         # =========================================
         # 🎞️ Motion モード
@@ -82,44 +89,39 @@ async def generate(
                 M=frames,
                 strength=strength,
                 guidance_scale=guidance,
+                out_dir=subdir,  # UUIDディレクトリへ保存
             )
 
-            # === URL組み立て ===
             image_urls = [
                 f"{BASE_URL}/{path}" if not path.startswith("http") else path
                 for path in result.get("frames", [])
             ]
 
-            return JSONResponse(
-                {
-                    "status": "ok",
-                    "mode": "motion",
-                    "frames_generated": result.get("generated", 0),
-                    "image_urls": image_urls,
-                }
-            )
+            return JSONResponse({
+                "status": "ok",
+                "id": run_id,
+                "mode": "motion",
+                "frames_generated": result.get("generated", 0),
+                "image_urls": image_urls,
+            })
 
         # =========================================
         # 🌫️ Time Reversal Sampling モード
         # =========================================
         elif diffusion_trs:
             print("[Mode] Selected -> diffusion_trs")
-            from models.pipeline_time_reversal import generate_midframes_trs
+            from models.pipeline_time_reversal_sampling import generate_midframes_trs
 
-            result = generate_midframes_trs(img1, img2, frames=frames, t0=t0)
-            urls = [
-                f"{BASE_URL}/{path}" if not path.startswith("http") else path
-                for path in result["frames"]
-            ]
+            result = generate_midframes_trs(img1, img2, frames=frames, t0=t0, out_dir=subdir)
+            urls = [f"{BASE_URL}/{p}" for p in result["frames"]]
 
-            return JSONResponse(
-                {
-                    "status": "ok",
-                    "mode": "diffusion_trs",
-                    "frames_generated": result["generated"],
-                    "image_urls": urls,
-                }
-            )
+            return JSONResponse({
+                "status": "ok",
+                "id": run_id,
+                "mode": "diffusion_trs",
+                "frames_generated": result["generated"],
+                "image_urls": urls,
+            })
 
         # =========================================
         # ✏️ 線画モード
@@ -128,17 +130,16 @@ async def generate(
             print("[Mode] Selected -> lineart")
             from models.pipeline_time_reversal_lineart import generate_lineart_frames
 
-            result = generate_lineart_frames(img1, img2, frames=frames)
+            result = generate_lineart_frames(img1, img2, frames=frames, out_dir=subdir)
             urls = [f"{BASE_URL}/{p}" for p in result["frames"]]
 
-            return JSONResponse(
-                {
-                    "status": "ok",
-                    "mode": "lineart",
-                    "frames_generated": result["generated"],
-                    "image_urls": urls,
-                }
-            )
+            return JSONResponse({
+                "status": "ok",
+                "id": run_id,
+                "mode": "lineart",
+                "frames_generated": result["generated"],
+                "image_urls": urls,
+            })
 
         # =========================================
         # 🌈 ノイズ除去モード
@@ -147,36 +148,34 @@ async def generate(
             print("[Mode] Selected -> denoise")
             from models.pipeline_time_reversal_denoise import generate_denoised_frames
 
-            result = generate_denoised_frames(img1, img2, frames=frames)
+            result = generate_denoised_frames(img1, img2, frames=frames, out_dir=subdir)
             urls = [f"{BASE_URL}/{p}" for p in result["frames"]]
 
-            return JSONResponse(
-                {
-                    "status": "ok",
-                    "mode": "denoise",
-                    "frames_generated": result["generated"],
-                    "image_urls": urls,
-                }
-            )
+            return JSONResponse({
+                "status": "ok",
+                "id": run_id,
+                "mode": "denoise",
+                "frames_generated": result["generated"],
+                "image_urls": urls,
+            })
 
         # =========================================
         # 🔵 通常モード
         # =========================================
         else:
             print("[Mode] Selected -> normal")
-            from models.pipeline_time_reversal import generate_midframes_trs
+            from models.pipeline_time_reversal_sampling import generate_midframes_trs
 
-            result = generate_midframes_trs(img1, img2, frames=frames, t0=t0)
+            result = generate_midframes_trs(img1, img2, frames=frames, t0=t0, out_dir=subdir)
             urls = [f"{BASE_URL}/{p}" for p in result["frames"]]
 
-            return JSONResponse(
-                {
-                    "status": "ok",
-                    "mode": "normal",
-                    "frames_generated": result["generated"],
-                    "image_urls": urls,
-                }
-            )
+            return JSONResponse({
+                "status": "ok",
+                "id": run_id,
+                "mode": "normal",
+                "frames_generated": result["generated"],
+                "image_urls": urls,
+            })
 
     except Exception as e:
         print(f"[ERROR] Pipeline failed: {e}")
@@ -186,9 +185,7 @@ async def generate(
 # =========================================
 # 🖼️ 静的ファイル（出力画像）公開
 # =========================================
-from fastapi.staticfiles import StaticFiles
-
-app.mount("/outputs", StaticFiles(directory="outputs"), name="outputs")
+app.mount("/outputs", StaticFiles(directory=OUTPUT_DIR), name="outputs")
 
 
 # =========================================
@@ -198,6 +195,6 @@ app.mount("/outputs", StaticFiles(directory="outputs"), name="outputs")
 def startup_event():
     print("🚀 FastAPI backend is running")
     print(f"📂 BASE_URL = {BASE_URL}")
-    print(f"📁 OUTPUT_DIR = outputs/")
+    print(f"📁 OUTPUT_DIR = {OUTPUT_DIR}/")
     print("✅ Available modes: normal, lineart, denoise, diffusion_trs, motion")
 
