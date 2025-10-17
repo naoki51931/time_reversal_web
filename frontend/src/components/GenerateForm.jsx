@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useCallback, useEffect } from "react";
 import axios from "axios";
 import {
   Button,
@@ -26,7 +26,12 @@ export default function GenerateForm() {
   const [denoise, setDenoise] = useState(false);
   const [hybrid, setHybrid] = useState(false);
   const [diffusionTrs, setDiffusionTrs] = useState(false);
-  const [motion, setMotion] = useState(false); // 🧍‍♀️動作補間モード
+  const [motion, setMotion] = useState(false);
+
+  // ✅ 初期値変更
+  const [strength, setStrength] = useState(0.15);
+  const [guidance, setGuidance] = useState(20.0);
+
   const [imageUrls, setImageUrls] = useState([]);
   const [loading, setLoading] = useState(false);
   const [openDialog, setOpenDialog] = useState(false);
@@ -34,7 +39,7 @@ export default function GenerateForm() {
 
   const API_BASE = "http://13.159.71.138:8000";
 
-  // === ←→キー操作関数 ===
+  // === 矢印キー移動 ===
   const handleNext = useCallback(() => {
     if (imageUrls.length === 0) return;
     setCurrentIndex((prev) => (prev + 1) % imageUrls.length);
@@ -45,7 +50,6 @@ export default function GenerateForm() {
     setCurrentIndex((prev) => (prev - 1 + imageUrls.length) % imageUrls.length);
   }, [imageUrls]);
 
-  // === ←→キーイベント登録 ===
   useEffect(() => {
     const handleKeyDown = (e) => {
       if (!openDialog || imageUrls.length === 0) return;
@@ -54,18 +58,23 @@ export default function GenerateForm() {
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [openDialog, imageUrls, handlePrev, handleNext]); // ✅ 警告解消済み依存配列
+  }, [openDialog, imageUrls, handleNext, handlePrev]);
 
-  // === 送信処理 ===
+  // === プリロード ===
+  const preloadImages = useCallback((urls) => {
+    urls.forEach((url) => {
+      const img = new Image();
+      img.src = url.startsWith("http") ? url : `${API_BASE}${url.startsWith("/") ? url : "/" + url}`;
+    });
+  }, []);
+
+  // === 送信 ===
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!image1 || !image2) {
       alert("2枚の画像を選択してください。");
       return;
     }
-
-    // 前回の結果をリセット
-    setImageUrls([]);
 
     const formData = new FormData();
     formData.append("image_1", image1);
@@ -76,6 +85,8 @@ export default function GenerateForm() {
     formData.append("denoise", hybrid ? true : denoise);
     formData.append("diffusion_trs", diffusionTrs);
     formData.append("motion", motion);
+    formData.append("strength", strength);
+    formData.append("guidance", guidance);
 
     try {
       setLoading(true);
@@ -83,31 +94,37 @@ export default function GenerateForm() {
         headers: { "Content-Type": "multipart/form-data" },
       });
 
+      console.log("📦 FastAPIレスポンス全体:", res.data);
+      console.log("🖼️ image_urls:", res.data.image_urls);
+
       if (res.data.image_urls) {
-        const timestamp = Date.now(); // キャッシュ防止
-        const urls = res.data.image_urls.map(
-          (u) => `${API_BASE}${u}?t=${timestamp}`
-        );
-        setImageUrls(urls);
+        preloadImages(res.data.image_urls);
+        setImageUrls(res.data.image_urls);
       } else {
         alert("生成結果がありません。");
       }
     } catch (err) {
-      console.error(err);
+      console.error("❌ エラー発生:", err);
       alert("生成中にエラーが発生しました。");
     } finally {
       setLoading(false);
     }
   };
 
-  // === 画像クリックで拡大 ===
   const handleImageClick = (index) => {
     setCurrentIndex(index);
     setOpenDialog(true);
   };
 
+  // === URLを安全に処理 ===
+  const resolveUrl = (url) => {
+    return url.startsWith("http")
+      ? url
+      : `${API_BASE}${url.startsWith("/") ? url : "/" + url}`;
+  };
+
   return (
-    <Box sx={{ maxWidth: 600, mx: "auto", mt: 4, textAlign: "center" }}>
+    <Box sx={{ width: "530px", margin: "0 auto", mt: 4, textAlign: "center" }}>
       <Typography variant="h4" gutterBottom>
         Time Reversal Generator
       </Typography>
@@ -115,19 +132,11 @@ export default function GenerateForm() {
       <form onSubmit={handleSubmit}>
         <Box sx={{ my: 2 }}>
           <Typography>画像A</Typography>
-          <input
-            type="file"
-            accept="image/*"
-            onChange={(e) => setImage1(e.target.files[0])}
-          />
+          <input type="file" accept="image/*" onChange={(e) => setImage1(e.target.files[0])} />
         </Box>
         <Box sx={{ my: 2 }}>
           <Typography>画像B</Typography>
-          <input
-            type="file"
-            accept="image/*"
-            onChange={(e) => setImage2(e.target.files[0])}
-          />
+          <input type="file" accept="image/*" onChange={(e) => setImage2(e.target.files[0])} />
         </Box>
 
         <TextField
@@ -148,67 +157,55 @@ export default function GenerateForm() {
         />
 
         <FormControlLabel
-          control={
-            <Checkbox
-              checked={lineart}
-              onChange={(e) => setLineart(e.target.checked)}
-            />
-          }
+          control={<Checkbox checked={lineart} onChange={(e) => setLineart(e.target.checked)} />}
           label="線画抽出モード"
         />
         <FormControlLabel
-          control={
-            <Checkbox
-              checked={denoise}
-              onChange={(e) => setDenoise(e.target.checked)}
-            />
-          }
+          control={<Checkbox checked={denoise} onChange={(e) => setDenoise(e.target.checked)} />}
           label="ノイズ除去モード"
         />
         <FormControlLabel
-          control={
-            <Checkbox
-              checked={hybrid}
-              onChange={(e) => setHybrid(e.target.checked)}
-            />
-          }
+          control={<Checkbox checked={hybrid} onChange={(e) => setHybrid(e.target.checked)} />}
           label="線画＋ノイズ除去ハイブリッド"
         />
         <FormControlLabel
           control={
-            <Checkbox
-              checked={diffusionTrs}
-              onChange={(e) => setDiffusionTrs(e.target.checked)}
-            />
+            <Checkbox checked={diffusionTrs} onChange={(e) => setDiffusionTrs(e.target.checked)} />
           }
-          label="Stable Diffusion 時反転補間"
+          label="Stable Diffusion 時反転補間モード"
         />
         <FormControlLabel
-          control={
-            <Checkbox
-              checked={motion}
-              onChange={(e) => setMotion(e.target.checked)}
-            />
-          }
-          label="動作補間モード 🧍‍♀️"
+          control={<Checkbox checked={motion} onChange={(e) => setMotion(e.target.checked)} />}
+          label="動作補間モード"
         />
 
-        <Button
-          variant="contained"
-          type="submit"
-          disabled={loading}
-          sx={{ mt: 2 }}
-        >
+        <TextField
+          label="強度 (strength)"
+          type="number"
+          value={strength}
+          onChange={(e) => setStrength(parseFloat(e.target.value))}
+          fullWidth
+          sx={{ my: 1 }}
+        />
+        <TextField
+          label="ガイダンス (guidance)"
+          type="number"
+          value={guidance}
+          onChange={(e) => setGuidance(parseFloat(e.target.value))}
+          fullWidth
+          sx={{ my: 1 }}
+        />
+
+        <Button variant="contained" type="submit" disabled={loading} sx={{ mt: 2 }}>
           生成開始
         </Button>
       </form>
 
       {loading && <LinearProgress sx={{ mt: 2 }} />}
 
+      {/* === 出力表示 === */}
       <Box sx={{ mt: 4 }}>
-        {imageUrls.length > 0 && (
-          <Typography variant="h6">生成結果:</Typography>
-        )}
+        {imageUrls.length > 0 && <Typography variant="h6">生成結果:</Typography>}
         <Box
           sx={{
             display: "flex",
@@ -221,7 +218,7 @@ export default function GenerateForm() {
           {imageUrls.map((url, idx) => (
             <img
               key={idx}
-              src={url}
+              src={resolveUrl(url)}
               alt={`frame_${idx}`}
               onClick={() => handleImageClick(idx)}
               style={{
@@ -235,7 +232,7 @@ export default function GenerateForm() {
         </Box>
       </Box>
 
-      {/* === プレビューダイアログ === */}
+      {/* === プレビュー === */}
       <Dialog open={openDialog} onClose={() => setOpenDialog(false)} maxWidth="lg" fullWidth>
         <DialogTitle sx={{ position: "relative", pr: 5 }}>
           プレビュー
@@ -269,7 +266,6 @@ export default function GenerateForm() {
               >
                 <ArrowBackIosNewIcon />
               </IconButton>
-
               <IconButton
                 onClick={handleNext}
                 sx={{
@@ -288,7 +284,7 @@ export default function GenerateForm() {
 
           {imageUrls[currentIndex] && (
             <img
-              src={imageUrls[currentIndex]}
+              src={resolveUrl(imageUrls[currentIndex])}
               alt={`frame_${currentIndex}`}
               style={{
                 maxWidth: "100%",
@@ -300,7 +296,7 @@ export default function GenerateForm() {
             />
           )}
           <Typography sx={{ mt: 1, color: "#fff" }}>
-            {currentIndex + 1} / {imageUrls.length}（←→キーでも移動可能）
+            {currentIndex + 1} / {imageUrls.length}（←→キーまたはボタンで移動）
           </Typography>
         </DialogContent>
       </Dialog>

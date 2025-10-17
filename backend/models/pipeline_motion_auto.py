@@ -1,221 +1,148 @@
-import os
-import gc
 import torch
-import numpy as np
-from PIL import Image
 from diffusers import StableDiffusionImg2ImgPipeline
+from PIL import Image
+import numpy as np
+import os
+import uuid
+from dotenv import load_dotenv
 
-# ===== .env 読み込み =====
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except Exception:
-    pass
+# =========================================
+# 🌐 環境変数の読み込み
+# =========================================
+load_dotenv()
 
+MODEL_ID = os.getenv("MOTION_MODEL_ID", "runwayml/stable-diffusion-v1-5")
+DTYPE = os.getenv("MOTION_DTYPE", "fp16")
+STRENGTH_DEFAULT = float(os.getenv("MOTION_DEFAULT_STRENGTH", 0.4))
+GUIDANCE_DEFAULT = float(os.getenv("MOTION_DEFAULT_GUIDANCE", 15.0))
+IMG_SIZE = int(os.getenv("MOTION_IMAGE_SIZE", 512))
+STEPS = int(os.getenv("MOTION_INFERENCE_STEPS", 40))
 
-# ======== ヘルパ関数群 ========
-def _get_dtype_from_env(env_key: str, default: str = "fp32"):
-    val = (os.getenv(env_key) or default).lower()
-    if val in ("fp16", "float16", "half"):
-        return torch.float16
-    if val in ("bf16", "bfloat16"):
-        return torch.bfloat16
-    return torch.float32
+ENABLE_XFORMERS = os.getenv("MOTION_ENABLE_XFORMERS", "true").lower() == "true"
+ENABLE_TILING = os.getenv("MOTION_ENABLE_VAE_TILING", "true").lower() == "true"
 
+# =========================================
+# 🧩 パイプライン構築
+# =========================================
+def _build_pipe():
+    torch_dtype = torch.float16 if DTYPE == "fp16" else torch.float32
+    print(f"[Motion] 🚀 Loading model: {MODEL_ID} ({DTYPE})")
 
-def _bool_env(key: str, default: bool = False):
-    return (os.getenv(key) or str(default)).lower() in ("1", "true", "yes", "on")
+    pipe = StableDiffusionImg2ImgPipeline.from_pretrained(
+        MODEL_ID,
+        torch_dtype=torch_dtype,
+        safety_checker=None,
+    ).to("cuda" if torch.cuda.is_available() else "cpu")
 
-
-def _int_env(key: str, default: int):
-    try:
-        return int(os.getenv(key, default))
-    except Exception:
-        return default
-
-
-def _float_env(key: str, default: float):
-    try:
-        return float(os.getenv(key, default))
-    except Exception:
-        return default
-
-
-# ======== パイプライン構築 ========
-def _build_pipe(model_id: str, torch_dtype: torch.dtype, device: str):
-    """Hugging Face モデルを読み込み、.env の設定を反映して最適化"""
-    from huggingface_hub import login
-
-    token = os.getenv("HUGGINGFACE_TOKEN", None)
-    if token:
-        try:
-            login(token=token)
-            print("[Auth] Hugging Face login success ✅")
-        except Exception as e:
-            print(f"[Auth] Login failed: {e}")
-
-    revision = os.getenv("MOTION_MODEL_REVISION", None)
-    use_safetensors = _bool_env("MOTION_USE_SAFETENSORS", False)
-
-    print(f"[Build] Loading model: {model_id} (revision={revision})")
-    print(f"[Build] safetensors={use_safetensors}, dtype={torch_dtype}, device={device}")
-
-    try:
-        pipe = StableDiffusionImg2ImgPipeline.from_pretrained(
-            model_id,
-            revision=revision,
-            torch_dtype=torch_dtype,
-            safety_checker=None,
-            use_safetensors=use_safetensors,
-            use_auth_token=token,
-        ).to(device)
-    except Exception as e:
-        # fallback: from_single_file
-        if os.path.exists(model_id) and model_id.endswith((".ckpt", ".safetensors")):
-            print(f"[Build:Fallback] Loading single file model: {model_id}")
-            pipe = StableDiffusionImg2ImgPipeline.from_single_file(
-                model_id,
-                torch_dtype=torch_dtype,
-                safety_checker=None,
-            ).to(device)
-        else:
-            raise e
-
-    # === メモリ最適化 ===
-    if _bool_env("MOTION_ENABLE_XFORMERS", True):
+    if ENABLE_XFORMERS:
         try:
             pipe.enable_xformers_memory_efficient_attention()
-            print("[Opt] xFormers attention enabled ✅")
-        except Exception as e:
-            print(f"[Opt] xFormers unavailable: {e}")
+        except Exception:
+            pass
 
-    if _bool_env("MOTION_ENABLE_ATTENTION_SLICING", True):
-        pipe.enable_attention_slicing()
-        print("[Opt] Attention slicing ✅")
-
-    if _bool_env("MOTION_ENABLE_VAE_TILING", True):
-        pipe.enable_vae_tiling()
-        print("[Opt] VAE tiling ✅")
+    if ENABLE_TILING:
+        pipe.vae.enable_tiling()
 
     return pipe
 
 
-# ======== メイン関数 ========
-def generate_motion_frame(
-    img_a: Image.Image,
-    img_b: Image.Image,
-    out_dir="outputs",
-    frames=5,
-    strength=None,
-    guidance_scale=None,
-    prompt=None,
+# =========================================
+# 🖼️ 自動リサイズ（アスペクト維持で1400px上限）
+# =========================================
+def auto_resize(img1: Image.Image, img2: Image.Image, max_size=1400):
+    w1, h1 = img1.size
+    w2, h2 = img2.size
+    min_w, min_h = min(w1, w2), min(h1, h2)
+
+    scale = min(max_size / max(min_w, min_h), 1.0)
+    new_size = (int(min_w * scale), int(min_h * scale))
+
+    return img1.resize(new_size, Image.LANCZOS), img2.resize(new_size, Image.LANCZOS)
+
+
+# =========================================
+# 🧭 サイズを強制一致させる補助関数
+# =========================================
+def match_size(base: Image.Image, target: Image.Image) -> Image.Image:
+    """targetのサイズをbaseに合わせる"""
+    if target.size != base.size:
+        return target.resize(base.size, Image.LANCZOS)
+    return target
+
+
+# =========================================
+# 🌀 モーション補間
+# =========================================
+def generate_motion_interpolation(
+    img1: Image.Image,
+    img2: Image.Image,
+    M: int = 3,
+    strength: float = STRENGTH_DEFAULT,
+    guidance_scale: float = GUIDANCE_DEFAULT,
 ):
     """
-    2枚の画像の間を "創造的に" 補間し、線画・スケッチ風の中間フレームを生成。
-    .env でパラメータ（モデル・dtype・サイズなど）を制御可能。
+    動作補間: 前フレームを次の入力に使って順次生成
     """
-    os.makedirs(out_dir, exist_ok=True)
-
-    # === .env 設定を読み取り ===
-    model_id = os.getenv("MOTION_MODEL_ID", "runwayml/stable-diffusion-v1-5")
-    dtype = _get_dtype_from_env("MOTION_DTYPE", "fp32")
-    size = _int_env("MOTION_IMAGE_SIZE", 512)
-    steps = _int_env("MOTION_INFERENCE_STEPS", 30)
-    default_strength = _float_env("MOTION_DEFAULT_STRENGTH", 0.55)
-    default_guidance = _float_env("MOTION_DEFAULT_GUIDANCE", 7.5)
-
-    if strength is None:
-        strength = default_strength
-    if guidance_scale is None:
-        guidance_scale = default_guidance
-
     device = "cuda" if torch.cuda.is_available() else "cpu"
-
-    print(f"[Motion] Model={model_id}, dtype={str(dtype).split('.')[-1]}, device={device}")
-    print(f"[Motion] size={size}, steps={steps}, strength={strength}, guidance={guidance_scale}")
-
+    pipe = None
     try:
-        if device == "cuda":
-            torch.cuda.empty_cache()
+        pipe = _build_pipe()
 
-        pipe = _build_pipe(model_id=model_id, torch_dtype=dtype, device=device)
+        # === 入力リサイズ ===
+        img1, img2 = auto_resize(img1, img2, max_size=1400)
+        img1 = img1.convert("RGB")
+        img2 = img2.convert("RGB")
 
-        img_a = img_a.convert("RGB").resize((size, size), Image.LANCZOS)
-        img_b = img_b.convert("RGB").resize((size, size), Image.LANCZOS)
+        base_prompt = "dynamic motion, smooth transition, natural lighting, anime-style"
+        os.makedirs("outputs", exist_ok=True)
+        frames = []
 
-        arr_a = np.array(img_a, dtype=np.float32)
-        arr_b = np.array(img_b, dtype=np.float32)
+        prev_image = img1  # 最初はAを入力
+        for i in range(M):
+            t = (i + 1) / (M + 1)
+            # ✅ サイズを合わせる
+            prev_image = match_size(img2, prev_image)
+            blend = Image.blend(prev_image, img2, alpha=t)
+            output_name = f"outputs/motion_frame_{i:03d}_{uuid.uuid4().hex[:8]}.png"
 
-        diff_intensity = float(np.mean(np.abs(arr_b - arr_a)))
-        print(f"[Motion] Difference Intensity: {diff_intensity:.2f}")
+            print(f"[Frame {i+1}] {blend.size[0]}x{blend.size[1]}, t={t:.2f}, steps={STEPS}, strength={strength}")
 
-        # ==== 自動プロンプト生成 ====
-        if prompt:
-            base_prompt = prompt
-        elif diff_intensity < 5:
-            base_prompt = "clean line art, subtle motion, sketch style, consistent outline"
-        elif diff_intensity < 20:
-            base_prompt = "smooth motion between two anime frames, line art, sketch aesthetic"
-        else:
-            base_prompt = "dynamic line art motion, expressive sketch, doodle style, consistent character"
+            try:
+                result = pipe(
+                    prompt=base_prompt,
+                    image=blend,
+                    strength=strength,
+                    guidance_scale=guidance_scale,
+                    num_inference_steps=STEPS,
+                )
 
-        print(f"[Motion] Base Prompt: {base_prompt}")
+                out_img = result.images[0]
+                out_img.save(output_name)
+                print(f"[Motion] ✅ Saved {output_name}")
+                frames.append(output_name)
 
-        frame_paths = []
+                # 次の入力に使用
+                prev_image = out_img
 
-        # ==== フレーム生成 ====
-        for i in range(1, frames + 1):
-            t = i / (frames + 1)
-            blend = arr_a * (1 - t) + arr_b * t
+            except RuntimeError as e:
+                if "out of memory" in str(e).lower():
+                    print(f"[Motion] ❌ OOM on frame {i+1}, retrying with smaller settings...")
+                    torch.cuda.empty_cache()
+                    torch.cuda.synchronize()
+                    strength = max(strength * 0.8, 0.1)
+                    guidance_scale = max(guidance_scale * 0.9, 5.0)
+                    continue
+                else:
+                    print(f"[Motion] ❌ Error on frame {i+1}: {e}")
+                    continue
 
-            # ノイズを中間点で強くする（創造的）
-            noise_strength = (np.sin(np.pi * t) ** 2) * 20.0
-            noisy = np.clip(
-                blend + np.random.normal(0, noise_strength, blend.shape),
-                0,
-                255
-            ).astype(np.uint8)
+        print(f"[Motion] Finished. Generated {len(frames)}/{M} frames.")
+        return {"status": "ok", "frames": frames, "generated": len(frames)}
 
-            mid_img = Image.fromarray(noisy)
-
-            creative_prompt = (
-                f"{base_prompt}, frame {i}/{frames}, detailed clean lines, "
-                "smooth motion, consistent lighting, artistic sketch, "
-                "creative line weight balance"
-            )
-
-            print(f"[Motion] Frame {i}/{frames} → noise={noise_strength:.1f}")
-
-            result = pipe(
-                prompt=creative_prompt,
-                image=mid_img,
-                strength=strength,
-                guidance_scale=guidance_scale,
-                num_inference_steps=steps,
-            )
-
-            if not hasattr(result, "images") or not result.images:
-                print(f"[WARN] Frame {i}: invalid result, fallback to blended image.")
-                img_out = mid_img
-            else:
-                img_out = result.images[0]
-
-            out_path = os.path.join(out_dir, f"motion_frame_{i:02d}.png")
-            img_out.save(out_path)
-            frame_paths.append(out_path)
-
-        print(f"[Motion] Generated {len(frame_paths)} frames successfully ✅")
-        return frame_paths
-
-    except Exception as e:
-        print(f"[Motion] Diffusion pipeline error: {e}")
-        return []
     finally:
-        try:
+        if pipe:
             del pipe
-            gc.collect()
-            if device == "cuda":
-                torch.cuda.empty_cache()
-        except Exception:
-            pass
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
 
