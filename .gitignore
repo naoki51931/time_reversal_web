@@ -24,4 +24,7 @@ hf_cache/
 # IDE / OS
 .DS_Store
 .env
+.env.*
 
+.env
+.env.swp
