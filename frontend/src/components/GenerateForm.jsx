@@ -24,11 +24,10 @@ export default function GenerateForm() {
   const [t0, setT0] = useState(0.0);
   const [lineart, setLineart] = useState(false);
   const [denoise, setDenoise] = useState(false);
-  const [hybrid, setHybrid] = useState(false);
   const [diffusionTrs, setDiffusionTrs] = useState(false);
   const [motion, setMotion] = useState(false);
 
-  // ✅ 初期値変更
+  // ✅ 初期値（環境指定）
   const [strength, setStrength] = useState(0.15);
   const [guidance, setGuidance] = useState(20.0);
 
@@ -50,6 +49,7 @@ export default function GenerateForm() {
     setCurrentIndex((prev) => (prev - 1 + imageUrls.length) % imageUrls.length);
   }, [imageUrls]);
 
+  // === キーボード操作対応 ===
   useEffect(() => {
     const handleKeyDown = (e) => {
       if (!openDialog || imageUrls.length === 0) return;
@@ -60,11 +60,13 @@ export default function GenerateForm() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [openDialog, imageUrls, handleNext, handlePrev]);
 
-  // === プリロード ===
+  // === 画像プリロード ===
   const preloadImages = useCallback((urls) => {
     urls.forEach((url) => {
       const img = new Image();
-      img.src = url.startsWith("http") ? url : `${API_BASE}${url.startsWith("/") ? url : "/" + url}`;
+      img.src = url.startsWith("http")
+        ? url
+        : `${API_BASE}${url.startsWith("/") ? url : "/" + url}`;
     });
   }, []);
 
@@ -81,8 +83,8 @@ export default function GenerateForm() {
     formData.append("image_2", image2);
     formData.append("frames", frames);
     formData.append("t0", t0);
-    formData.append("lineart", hybrid ? true : lineart);
-    formData.append("denoise", hybrid ? true : denoise);
+    formData.append("lineart", lineart);
+    formData.append("denoise", denoise);
     formData.append("diffusion_trs", diffusionTrs);
     formData.append("motion", motion);
     formData.append("strength", strength);
@@ -90,6 +92,7 @@ export default function GenerateForm() {
 
     try {
       setLoading(true);
+
       const res = await axios.post(`${API_BASE}/generate`, formData, {
         headers: { "Content-Type": "multipart/form-data" },
       });
@@ -97,9 +100,16 @@ export default function GenerateForm() {
       console.log("📦 FastAPIレスポンス全体:", res.data);
       console.log("🖼️ image_urls:", res.data.image_urls);
 
-      if (res.data.image_urls) {
-        preloadImages(res.data.image_urls);
-        setImageUrls(res.data.image_urls);
+      if (res.data.image_urls && res.data.image_urls.length > 0) {
+        // ✅ 既存の表示を一旦クリアして確実に再レンダーさせる
+        setImageUrls([]);
+        setCurrentIndex(0);
+
+        setTimeout(() => {
+          const newUrls = [...res.data.image_urls]; // 新しい配列参照を強制
+          preloadImages(newUrls);
+          setImageUrls(newUrls);
+        }, 10);
       } else {
         alert("生成結果がありません。");
       }
@@ -123,6 +133,13 @@ export default function GenerateForm() {
       : `${API_BASE}${url.startsWith("/") ? url : "/" + url}`;
   };
 
+  // === 新しい画像セット時は自動的に最初の画像を表示 ===
+  useEffect(() => {
+    if (imageUrls.length > 0) {
+      setCurrentIndex(0);
+    }
+  }, [imageUrls]);
+
   return (
     <Box sx={{ width: "530px", margin: "0 auto", mt: 4, textAlign: "center" }}>
       <Typography variant="h4" gutterBottom>
@@ -132,11 +149,19 @@ export default function GenerateForm() {
       <form onSubmit={handleSubmit}>
         <Box sx={{ my: 2 }}>
           <Typography>画像A</Typography>
-          <input type="file" accept="image/*" onChange={(e) => setImage1(e.target.files[0])} />
+          <input
+            type="file"
+            accept="image/*"
+            onChange={(e) => setImage1(e.target.files[0])}
+          />
         </Box>
         <Box sx={{ my: 2 }}>
           <Typography>画像B</Typography>
-          <input type="file" accept="image/*" onChange={(e) => setImage2(e.target.files[0])} />
+          <input
+            type="file"
+            accept="image/*"
+            onChange={(e) => setImage2(e.target.files[0])}
+          />
         </Box>
 
         <TextField
@@ -157,25 +182,39 @@ export default function GenerateForm() {
         />
 
         <FormControlLabel
-          control={<Checkbox checked={lineart} onChange={(e) => setLineart(e.target.checked)} />}
+          control={
+            <Checkbox
+              checked={lineart}
+              onChange={(e) => setLineart(e.target.checked)}
+            />
+          }
           label="線画抽出モード"
         />
         <FormControlLabel
-          control={<Checkbox checked={denoise} onChange={(e) => setDenoise(e.target.checked)} />}
+          control={
+            <Checkbox
+              checked={denoise}
+              onChange={(e) => setDenoise(e.target.checked)}
+            />
+          }
           label="ノイズ除去モード"
         />
         <FormControlLabel
-          control={<Checkbox checked={hybrid} onChange={(e) => setHybrid(e.target.checked)} />}
-          label="線画＋ノイズ除去ハイブリッド"
-        />
-        <FormControlLabel
           control={
-            <Checkbox checked={diffusionTrs} onChange={(e) => setDiffusionTrs(e.target.checked)} />
+            <Checkbox
+              checked={diffusionTrs}
+              onChange={(e) => setDiffusionTrs(e.target.checked)}
+            />
           }
           label="Stable Diffusion 時反転補間モード"
         />
         <FormControlLabel
-          control={<Checkbox checked={motion} onChange={(e) => setMotion(e.target.checked)} />}
+          control={
+            <Checkbox
+              checked={motion}
+              onChange={(e) => setMotion(e.target.checked)}
+            />
+          }
           label="動作補間モード"
         />
 

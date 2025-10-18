@@ -1,15 +1,15 @@
 # -*- coding: utf-8 -*-
 """
 Stable Diffusion + DDIM による Time Reversal Sampling（時反転サンプリング）
-Baseクラス参照 + t0対応 + FastAPI互換構造
+白背景維持 + 線をくっきり強調（アンシャープマスク＋輝度補正）
 """
 
 import os
 import torch
-from typing import List, Optional
-from PIL import Image
+from typing import Optional
+from PIL import Image, ImageEnhance, ImageOps, ImageFilter
+import numpy as np
 
-# Baseを参照
 from .pipeline_time_reversal_base import TimeReversalBase, PipelineResult
 
 
@@ -17,13 +17,50 @@ from .pipeline_time_reversal_base import TimeReversalBase, PipelineResult
 # Time Reversal Sampling Pipeline
 # ======================================================
 class TimeReversalPipeline(TimeReversalBase):
-    """
-    Stable Diffusion VAEの潜在空間で指数補間を行い、Time Reversal Samplingを模倣。
-    Baseクラスの補間式を拡張してTRS用補間を実行。
-    """
+    """Time Reversal Sampling with clear white background and bold lines"""
+
     def preprocess_latent(self, z: torch.Tensor) -> torch.Tensor:
-        # TRS補間中に軽い正規化（オプション）
+        # 軽い正規化
         return z / (z.abs().max() + 1e-6)
+
+    def postprocess_output(self, image: Image.Image) -> Image.Image:
+        """白背景維持 + 線をはっきりくっきり描き出す"""
+        # ---- モノクロ変換 ----
+        img = image.convert("L")
+
+        # ---- 輝度正規化 ----
+        np_img = np.array(img, dtype=np.float32)
+        np_img = (np_img - np_img.min()) / (np_img.max() - np_img.min() + 1e-5)
+        np_img = np.clip(np_img * 255, 0, 255).astype(np.uint8)
+        img = Image.fromarray(np_img)
+
+        # ---- ノイズ平滑化（線を残す）----
+        img = img.filter(ImageFilter.MedianFilter(size=3))
+
+        # ---- コントラスト強調 ----
+        img = ImageEnhance.Contrast(img).enhance(2.2)
+
+        # ---- 明るさ少し上げて白地を維持 ----
+        img = ImageEnhance.Brightness(img).enhance(1.15)
+
+        # ---- アンシャープマスクで線を太くする ----
+        img = img.filter(ImageFilter.UnsharpMask(radius=2, percent=180, threshold=4))
+
+        # ---- しきい値補正（薄い線を残しつつ白飛び防止）----
+        np_img = np.array(img)
+        low, high = 170, 240
+        mask_dark = np_img < low
+        mask_mid = (np_img >= low) & (np_img <= high)
+        np_img[mask_mid] = np_img[mask_mid] * 0.7
+        np_img[mask_dark] = np.clip(np_img[mask_dark] * 0.5, 0, 120)
+        np_img = np.clip(np_img, 0, 255).astype(np.uint8)
+
+        # ---- オートコントラストで最終調整 ----
+        img = Image.fromarray(np_img)
+        img = ImageOps.autocontrast(img, cutoff=0.5)
+
+        # ---- RGB変換して返す ----
+        return img.convert("RGB")
 
 
 # ======================================================
@@ -33,9 +70,6 @@ _TRS_SINGLETON: Optional[TimeReversalPipeline] = None
 
 
 def _get_trs_singleton() -> TimeReversalPipeline:
-    """
-    Singletonでパイプラインを保持（毎回ロードを防ぐ）
-    """
     global _TRS_SINGLETON
     if _TRS_SINGLETON is None:
         print("[TRS] Initializing TimeReversalPipeline singleton...")
@@ -51,17 +85,26 @@ def generate_midframes_trs(
     t0: float = 5.0,
     out_dir: str = "outputs",
 ) -> dict:
-    """
-    Baseクラスを利用して中間フレーム生成
-    - t0: 補間指数パラメータ（大きいほど非線形）
-    - frames: 中間フレーム数
-    """
     pipe = _get_trs_singleton()
     os.makedirs(out_dir, exist_ok=True)
 
     print(f"[TRS] Running Time Reversal Sampling (frames={frames}, t0={t0})")
 
     result: PipelineResult = pipe(imgA, imgB, M=frames, t0=t0)
+
+    # === 白背景＋線強調を適用 ===
+    enhanced_frames = []
+    for f in result.frames:
+        try:
+            im = Image.open(f)
+            im = pipe.postprocess_output(im)
+            im.save(f)
+            enhanced_frames.append(f)
+        except Exception as e:
+            print(f"[TRS] Warning: postprocess failed on {f}: {e}")
+            enhanced_frames.append(f)
+
+    result.frames = enhanced_frames
 
     return {
         "status": result.status,

@@ -16,24 +16,23 @@ if load_dotenv():
 else:
     print("[⚠️ ENV] .envファイルが見つかりません。")
 
-# ベースURL（自動的に環境変数から取得）
 BASE_URL = os.getenv("BASE_URL", "http://13.159.71.138:8000")
 
 # =========================================
 # 🚀 FastAPI アプリ設定
 # =========================================
-app = FastAPI(title="Time Reversal Web", version="2.2")
+app = FastAPI(title="Time Reversal Web", version="2.3")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 開発中は全許可
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # =========================================
-# 📁 出力ディレクトリ作成
+# 📁 出力ディレクトリ
 # =========================================
 OUTPUT_DIR = "outputs"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -60,16 +59,14 @@ async def generate(
         f"lineart={lineart}, denoise={denoise}, diffusion_trs={diffusion_trs}, motion={motion}"
     )
 
-    # === ファイル読み込み ===
     img1 = Image.open(BytesIO(await image_1.read())).convert("RGB")
     img2 = Image.open(BytesIO(await image_2.read())).convert("RGB")
 
-    # === フレーム数補正 ===
     if frames <= 0:
         print(f"[Warn] frames={frames} → 自動補正: 1 に変更")
         frames = 1
 
-    # === 一意のIDを生成 ===
+    # === 一意のセッションIDで保存先を分離 ===
     run_id = uuid.uuid4().hex[:8]
     subdir = os.path.join(OUTPUT_DIR, f"run_{run_id}")
     os.makedirs(subdir, exist_ok=True)
@@ -89,39 +86,20 @@ async def generate(
                 M=frames,
                 strength=strength,
                 guidance_scale=guidance,
-                out_dir=subdir,  # UUIDディレクトリへ保存
+                out_dir=subdir,
+                t0=t0,  # ← 共通パラメータ
             )
 
-            image_urls = [
-                f"{BASE_URL}/{path}" if not path.startswith("http") else path
-                for path in result.get("frames", [])
-            ]
-
-            return JSONResponse({
-                "status": "ok",
-                "id": run_id,
-                "mode": "motion",
-                "frames_generated": result.get("generated", 0),
-                "image_urls": image_urls,
-            })
-
         # =========================================
-        # 🌫️ Time Reversal Sampling モード
+        # 🌫️ Diffusion-based Time Reversal Sampling
         # =========================================
         elif diffusion_trs:
             print("[Mode] Selected -> diffusion_trs")
             from models.pipeline_time_reversal_sampling import generate_midframes_trs
 
-            result = generate_midframes_trs(img1, img2, frames=frames, t0=t0, out_dir=subdir)
-            urls = [f"{BASE_URL}/{p}" for p in result["frames"]]
-
-            return JSONResponse({
-                "status": "ok",
-                "id": run_id,
-                "mode": "diffusion_trs",
-                "frames_generated": result["generated"],
-                "image_urls": urls,
-            })
+            result = generate_midframes_trs(
+                img1, img2, frames=frames, t0=t0, out_dir=subdir
+            )
 
         # =========================================
         # ✏️ 線画モード
@@ -130,16 +108,9 @@ async def generate(
             print("[Mode] Selected -> lineart")
             from models.pipeline_time_reversal_lineart import generate_lineart_frames
 
-            result = generate_lineart_frames(img1, img2, frames=frames, out_dir=subdir)
-            urls = [f"{BASE_URL}/{p}" for p in result["frames"]]
-
-            return JSONResponse({
-                "status": "ok",
-                "id": run_id,
-                "mode": "lineart",
-                "frames_generated": result["generated"],
-                "image_urls": urls,
-            })
+            result = generate_lineart_frames(
+                img1, img2, frames=frames, t0=t0, out_dir=subdir
+            )
 
         # =========================================
         # 🌈 ノイズ除去モード
@@ -148,16 +119,9 @@ async def generate(
             print("[Mode] Selected -> denoise")
             from models.pipeline_time_reversal_denoise import generate_denoised_frames
 
-            result = generate_denoised_frames(img1, img2, frames=frames, out_dir=subdir)
-            urls = [f"{BASE_URL}/{p}" for p in result["frames"]]
-
-            return JSONResponse({
-                "status": "ok",
-                "id": run_id,
-                "mode": "denoise",
-                "frames_generated": result["generated"],
-                "image_urls": urls,
-            })
+            result = generate_denoised_frames(
+                img1, img2, frames=frames, t0=t0, out_dir=subdir
+            )
 
         # =========================================
         # 🔵 通常モード
@@ -166,16 +130,34 @@ async def generate(
             print("[Mode] Selected -> normal")
             from models.pipeline_time_reversal_sampling import generate_midframes_trs
 
-            result = generate_midframes_trs(img1, img2, frames=frames, t0=t0, out_dir=subdir)
-            urls = [f"{BASE_URL}/{p}" for p in result["frames"]]
+            result = generate_midframes_trs(
+                img1, img2, frames=frames, t0=t0, out_dir=subdir
+            )
 
-            return JSONResponse({
-                "status": "ok",
-                "id": run_id,
-                "mode": "normal",
-                "frames_generated": result["generated"],
-                "image_urls": urls,
-            })
+        # === URL組み立て ===
+        if isinstance(result, dict) and "frames" in result:
+            image_urls = [
+                f"{BASE_URL}/{path}" if not path.startswith("http") else path
+                for path in result.get("frames", [])
+            ]
+            frames_generated = result.get("generated", len(image_urls))
+        else:
+            image_urls = []
+            frames_generated = 0
+
+        return JSONResponse({
+            "status": "ok",
+            "id": run_id,
+            "mode": (
+                "motion" if motion else
+                "diffusion_trs" if diffusion_trs else
+                "lineart" if lineart else
+                "denoise" if denoise else
+                "normal"
+            ),
+            "frames_generated": frames_generated,
+            "image_urls": image_urls,
+        })
 
     except Exception as e:
         print(f"[ERROR] Pipeline failed: {e}")
