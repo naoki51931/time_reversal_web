@@ -25,7 +25,6 @@ class TimeReversalPipeline(TimeReversalBase):
 
     def postprocess_output(self, image: Image.Image) -> Image.Image:
         """白背景維持 + 線をはっきりくっきり描き出す"""
-        # ---- モノクロ変換 ----
         img = image.convert("L")
 
         # ---- 輝度正規化 ----
@@ -85,10 +84,20 @@ def generate_midframes_trs(
     t0: float = 5.0,
     out_dir: str = "outputs",
 ) -> dict:
+    """
+    Time Reversal Sampling 実行
+    - out_dir: 出力先ディレクトリ
+    - frames: 生成枚数
+    - t0: 時間補間パラメータ
+    """
     pipe = _get_trs_singleton()
     os.makedirs(out_dir, exist_ok=True)
 
+    # ✅ 出力ディレクトリを更新（これが重要！）
+    pipe.output_dir = out_dir  
+
     print(f"[TRS] Running Time Reversal Sampling (frames={frames}, t0={t0})")
+    print(f"[TRS] Output directory = {pipe.output_dir}")
 
     result: PipelineResult = pipe(imgA, imgB, M=frames, t0=t0)
 
@@ -105,6 +114,14 @@ def generate_midframes_trs(
             enhanced_frames.append(f)
 
     result.frames = enhanced_frames
+
+    # === 完了ログ ===
+    if result.frames:
+        print(f"[TRS] ✅ Generated {len(result.frames)} frames:")
+        for f in result.frames:
+            print(f"   → {f}")
+    else:
+        print("[TRS] ⚠️ No frames generated.")
 
     return {
         "status": result.status,

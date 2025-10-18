@@ -76,9 +76,21 @@ def generate_lineart_frames(
     os.makedirs(out_dir, exist_ok=True)
     pipe = _get_lineart_singleton()
 
+    # ✅ 出力ディレクトリを反映
+    pipe.output_dir = out_dir  
+
     print(f"[LineArt] Running lineart pipeline (frames={frames}, t0={t0})")
+    print(f"[LineArt] Output directory = {pipe.output_dir}")
 
     result: PipelineResult = pipe(imgA, imgB, M=frames, t0=t0)
+
+    # === 出力確認 ===
+    if result.frames:
+        print(f"[LineArt] ✅ Generated {len(result.frames)} frames:")
+        for f in result.frames:
+            print(f"   → {f}")
+    else:
+        print("[LineArt] ⚠️ No frames generated.")
 
     return {
         "status": result.status,

@@ -21,7 +21,7 @@ BASE_URL = os.getenv("BASE_URL", "http://13.159.71.138:8000")
 # =========================================
 # 🚀 FastAPI アプリ設定
 # =========================================
-app = FastAPI(title="Time Reversal Web", version="2.3")
+app = FastAPI(title="Time Reversal Web", version="2.4")
 
 app.add_middleware(
     CORSMiddleware,
@@ -87,7 +87,7 @@ async def generate(
                 strength=strength,
                 guidance_scale=guidance,
                 out_dir=subdir,
-                t0=t0,  # ← 共通パラメータ
+                t0=t0,
             )
 
         # =========================================
@@ -124,13 +124,13 @@ async def generate(
             )
 
         # =========================================
-        # 🔵 通常モード
+        # 🔵 通常モード (Standard Time Reversal)
         # =========================================
         else:
             print("[Mode] Selected -> normal")
-            from models.pipeline_time_reversal_sampling import generate_midframes_trs
+            from models.pipeline_time_reversal import generate_midframes_normal
 
-            result = generate_midframes_trs(
+            result = generate_midframes_normal(
                 img1, img2, frames=frames, t0=t0, out_dir=subdir
             )
 

@@ -12,6 +12,7 @@ import {
   DialogContent,
   DialogTitle,
   IconButton,
+  Paper,
 } from "@mui/material";
 import CloseIcon from "@mui/icons-material/Close";
 import ArrowBackIosNewIcon from "@mui/icons-material/ArrowBackIosNew";
@@ -92,7 +93,6 @@ export default function GenerateForm() {
 
     try {
       setLoading(true);
-
       const res = await axios.post(`${API_BASE}/generate`, formData, {
         headers: { "Content-Type": "multipart/form-data" },
       });
@@ -101,12 +101,10 @@ export default function GenerateForm() {
       console.log("🖼️ image_urls:", res.data.image_urls);
 
       if (res.data.image_urls && res.data.image_urls.length > 0) {
-        // ✅ 既存の表示を一旦クリアして確実に再レンダーさせる
         setImageUrls([]);
         setCurrentIndex(0);
-
         setTimeout(() => {
-          const newUrls = [...res.data.image_urls]; // 新しい配列参照を強制
+          const newUrls = [...res.data.image_urls];
           preloadImages(newUrls);
           setImageUrls(newUrls);
         }, 10);
@@ -126,18 +124,14 @@ export default function GenerateForm() {
     setOpenDialog(true);
   };
 
-  // === URLを安全に処理 ===
   const resolveUrl = (url) => {
     return url.startsWith("http")
       ? url
       : `${API_BASE}${url.startsWith("/") ? url : "/" + url}`;
   };
 
-  // === 新しい画像セット時は自動的に最初の画像を表示 ===
   useEffect(() => {
-    if (imageUrls.length > 0) {
-      setCurrentIndex(0);
-    }
+    if (imageUrls.length > 0) setCurrentIndex(0);
   }, [imageUrls]);
 
   return (
@@ -181,6 +175,7 @@ export default function GenerateForm() {
           sx={{ my: 1 }}
         />
 
+        {/* === モード選択 === */}
         <FormControlLabel
           control={
             <Checkbox
@@ -215,27 +210,51 @@ export default function GenerateForm() {
               onChange={(e) => setMotion(e.target.checked)}
             />
           }
-          label="動作補間モード"
+          label="動作補間モード（💡strength・guidanceパラメータを使用）"
         />
 
-        <TextField
-          label="強度 (strength)"
-          type="number"
-          value={strength}
-          onChange={(e) => setStrength(parseFloat(e.target.value))}
-          fullWidth
-          sx={{ my: 1 }}
-        />
-        <TextField
-          label="ガイダンス (guidance)"
-          type="number"
-          value={guidance}
-          onChange={(e) => setGuidance(parseFloat(e.target.value))}
-          fullWidth
-          sx={{ my: 1 }}
-        />
+        {/* === 動作補間モード専用パラメータ === */}
+        <Paper
+          variant="outlined"
+          sx={{
+            p: 2,
+            mt: 2,
+            backgroundColor: "#f9f9f9",
+            borderColor: "#ccc",
+            textAlign: "left",
+          }}
+        >
+          <Typography
+            variant="subtitle2"
+            sx={{ fontWeight: "bold", mb: 1, color: "gray" }}
+          >
+            💡以下のパラメータは「動作補間モード」で使用されます
+          </Typography>
 
-        <Button variant="contained" type="submit" disabled={loading} sx={{ mt: 2 }}>
+          <TextField
+            label="強度 (strength)"
+            type="number"
+            value={strength}
+            onChange={(e) => setStrength(parseFloat(e.target.value))}
+            fullWidth
+            sx={{ my: 1 }}
+          />
+          <TextField
+            label="ガイダンス (guidance)"
+            type="number"
+            value={guidance}
+            onChange={(e) => setGuidance(parseFloat(e.target.value))}
+            fullWidth
+            sx={{ my: 1 }}
+          />
+        </Paper>
+
+        <Button
+          variant="contained"
+          type="submit"
+          disabled={loading}
+          sx={{ mt: 3 }}
+        >
           生成開始
         </Button>
       </form>
@@ -244,7 +263,9 @@ export default function GenerateForm() {
 
       {/* === 出力表示 === */}
       <Box sx={{ mt: 4 }}>
-        {imageUrls.length > 0 && <Typography variant="h6">生成結果:</Typography>}
+        {imageUrls.length > 0 && (
+          <Typography variant="h6">生成結果:</Typography>
+        )}
         <Box
           sx={{
             display: "flex",
@@ -272,7 +293,12 @@ export default function GenerateForm() {
       </Box>
 
       {/* === プレビュー === */}
-      <Dialog open={openDialog} onClose={() => setOpenDialog(false)} maxWidth="lg" fullWidth>
+      <Dialog
+        open={openDialog}
+        onClose={() => setOpenDialog(false)}
+        maxWidth="lg"
+        fullWidth
+      >
         <DialogTitle sx={{ position: "relative", pr: 5 }}>
           プレビュー
           <IconButton
